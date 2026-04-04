@@ -14,8 +14,28 @@ Document ingestion for RAG pipelines. Polls Google Drive, git repos, and web URL
 
 ## Quick start (container)
 
+Three Containerfile variants — build selects automatically based on GPU:
+
+| Containerfile | Base image | GPU | Use case |
+|---------------|-----------|-----|----------|
+| `Containerfile` | UBI10 (Red Hat) | none | CPU-only poller, delegates embedding to ragpipe |
+| `Containerfile.rocm` | rocm/pytorch (AMD) | ROCm | GPU embedding on AMD GPUs |
+| `Containerfile.cuda` | pytorch/pytorch (NVIDIA) | CUDA | GPU embedding on NVIDIA GPUs |
+
 ```bash
+# CPU-only (default — Red Hat UBI10)
 podman build -t ragstuffer .
+
+# AMD ROCm GPU
+podman build -t ragstuffer:rocm -f Containerfile.rocm .
+
+# NVIDIA CUDA GPU
+podman build -t ragstuffer:cuda -f Containerfile.cuda .
+```
+
+Or let `llm-stack.sh build` auto-select based on detected GPU.
+
+```bash
 podman run --rm \
     -e GDRIVE_FOLDER_ID=your-folder-id \
     -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gdrive-sa.json \
