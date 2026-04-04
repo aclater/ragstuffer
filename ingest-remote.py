@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """One-shot GPU ingestion — runs on a remote host with sentence-transformers.
 
-Embeds documents using CUDA (or all CPU cores as fallback), then pushes
-chunks to Postgres and vectors to Qdrant on a target host.
+Auto-detects GPU (NVIDIA CUDA, AMD ROCm, Intel XPU) for embedding,
+falls back to CPU. Pushes chunks to Postgres and vectors to Qdrant
+on a target host.
 
 Usage:
     # Via deploy script:
@@ -388,12 +389,39 @@ def load_web_docs() -> list[dict]:
 # ── Local FastEmbed ──────────────────────────────────────────────────────────
 
 
-def embed_texts_local(texts: list[str], batch_size: int = 256) -> list[list[float]]:
-    """Embed using sentence-transformers on CUDA (4070 Ti)."""
+def _detect_device() -> str:
+    """Auto-detect the best available accelerator for PyTorch.
+
+    Priority: CUDA (NVIDIA) > ROCm (AMD via HIP) > XPU (Intel) > CPU.
+    ROCm exposes AMD GPUs as CUDA devices via HIP, so torch.cuda covers
+    both NVIDIA and AMD when the ROCm PyTorch build is installed.
+    Override with RAGSTUFFER_DEVICE env var (cuda, xpu, cpu).
+    """
     import torch
+
+    forced = os.environ.get("RAGSTUFFER_DEVICE", "").strip().lower()
+    if forced:
+        log.info("Device forced via RAGSTUFFER_DEVICE=%s", forced)
+        return forced
+
+    if torch.cuda.is_available():
+        name = torch.cuda.get_device_name(0)
+        log.info("Detected GPU: %s (CUDA/ROCm)", name)
+        return "cuda"
+
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        log.info("Detected Intel XPU")
+        return "xpu"
+
+    log.info("No GPU detected — using CPU")
+    return "cpu"
+
+
+def embed_texts_local(texts: list[str], batch_size: int = 256) -> list[list[float]]:
+    """Embed using sentence-transformers on the best available accelerator."""
     from sentence_transformers import SentenceTransformer
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = _detect_device()
     log.info("Loading model %s on %s...", EMBED_MODEL, device)
     model = SentenceTransformer(EMBED_MODEL, device=device)
 
