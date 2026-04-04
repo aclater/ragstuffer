@@ -9,7 +9,7 @@ Document ingestion for RAG pipelines. Polls Google Drive, git repos, and web URL
 3. **Extract** text from PDF, DOCX, PPTX, XLSX, HTML, Markdown, plain text
 4. **Chunk** with RecursiveCharacterTextSplitter (1024 chars, 128 overlap)
 5. **Persist** chunks to Postgres document store (keyed on deterministic UUID5 from source URI)
-6. **Embed** via ragpipe's `/v1/embeddings` endpoint (or directly via sentence-transformers for GPU)
+6. **Embed** via ragpipe's `/v1/embeddings` endpoint (or directly via sentence-transformers with GPU auto-detection)
 7. **Upsert** reference-only payloads to Qdrant (vectors + {doc_id, chunk_id, source, created_at})
 
 ## Quick start (container)
@@ -28,7 +28,7 @@ podman run --rm \
 
 ## One-shot GPU ingestion
 
-For bulk ingestion, `ingest-remote.py` runs embedding on a GPU-equipped host using sentence-transformers (CUDA) and pushes results to Qdrant + Postgres over the network:
+For bulk ingestion, `ingest-remote.py` auto-detects the best available GPU (NVIDIA CUDA, AMD ROCm, Intel XPU) and embeds using sentence-transformers, then pushes results to Qdrant + Postgres over the network. Falls back to CPU if no GPU is found.
 
 ```bash
 # Deploy to a remote GPU host, pushing data to a target host:
@@ -54,6 +54,17 @@ GDRIVE_FOLDER_ID=your-folder-id ./deploy-remote.sh gpu-host.local
 | `DOCSTORE_BACKEND` | `postgres` | `postgres` or `sqlite` |
 | `DOCSTORE_URL` | *(required)* | Postgres connection string |
 | `GOOGLE_APPLICATION_CREDENTIALS` | — | Path to service account key |
+
+### GPU ingestion (`ingest-remote.py`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TARGET_HOST` | `127.0.0.1` | Hostname/IP of Qdrant + Postgres target |
+| `RAGSTUFFER_DEVICE` | *(auto-detect)* | Force device: `cuda`, `xpu`, or `cpu` |
+| `EMBED_MODEL` | `BAAI/bge-base-en-v1.5` | Sentence-transformers model |
+| `EMBED_THREADS` | `nproc` | CPU threads (when using CPU) |
+
+GPU auto-detection priority: CUDA (NVIDIA) > ROCm (AMD via HIP) > XPU (Intel) > CPU.
 
 ## Running tests
 
