@@ -514,7 +514,7 @@ def _register_collection(collection_name: str, source_types: set[str]) -> None:
                     ),
                     updated_at = %s
                 """,
-                (collection_name, source_types_json, source_types_json, source_types_json, now),
+                (collection_name, source_types_json, now, source_types_json, source_types_json, now),
             )
         log.info("Registered collection '%s' with source types %s", collection_name, source_types)
     except Exception as e:
