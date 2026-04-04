@@ -1,0 +1,4 @@
+# SC2029: SSH commands intentionally expand variables client-side
+# SC2086: Controlled paths don't need double-quoting in all contexts
+# SC2154: Variables set by dialog/sourced files, not visible to ShellCheck
+disable=SC2029,SC2086,SC2154

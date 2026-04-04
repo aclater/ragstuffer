@@ -1,0 +1,29 @@
+name: Containerfile lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Containerfile*"
+  pull_request:
+    paths:
+      - "Containerfile*"
+
+permissions:
+  contents: read
+
+jobs:
+  hadolint:
+    name: Hadolint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        dockerfile:
+          - Containerfile
+          - Containerfile.rocm
+          - Containerfile.cuda
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ matrix.dockerfile }}
