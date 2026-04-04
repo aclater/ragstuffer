@@ -1,14 +1,25 @@
 #!/bin/bash
-# Deploy and run one-shot RAG ingestion on lennon.home.arpa
-# Embeds locally on lennon (32 cores, 125GB RAM), pushes to harrison's Qdrant + Postgres
+# Deploy and run one-shot RAG ingestion on a remote GPU host.
+# Embeds locally on the remote host, pushes to a target Qdrant + Postgres.
+#
+# Usage: ./deploy-remote.sh <gpu-host> [target-host]
+#   gpu-host:    hostname/IP of the machine with GPU (runs embedding)
+#   target-host: hostname/IP where Qdrant + Postgres are (receives data)
+#                defaults to gpu-host if not specified (embed + store on same host)
+#
+# Environment:
+#   GDRIVE_FOLDER_ID  — required, Google Drive folder to ingest
+#   SA_KEY            — path to service account key (default: ~/.config/ramalama/gdrive-sa.json)
+#   REPO_SOURCES      — optional JSON list of git repos
+#   WEB_SOURCES       — optional JSON list of web URLs
 set -euo pipefail
 
-REMOTE="lennon.home.arpa"
+REMOTE="${1:?Usage: $0 <gpu-host> [target-host]}"
+TARGET="${2:-$REMOTE}"
 REMOTE_DIR="/tmp/rag-ingest"
-HARRISON="192.168.1.122"
-SA_KEY="$HOME/.config/ramalama/gdrive-sa.json"
+SA_KEY="${SA_KEY:-$HOME/.config/ramalama/gdrive-sa.json}"
 
-echo "=== Deploying to $REMOTE ==="
+echo "=== Deploying to $REMOTE (target: $TARGET) ==="
 
 # Create remote directory and copy files
 ssh "$REMOTE" "mkdir -p $REMOTE_DIR"
@@ -42,9 +53,9 @@ ssh "$REMOTE" "cd $REMOTE_DIR && \
 echo "=== Running ingestion ==="
 ssh "$REMOTE" "cd $REMOTE_DIR && \
     source venv/bin/activate && \
-    HARRISON_HOST=$HARRISON \
-    GDRIVE_FOLDER_ID=${GDRIVE_FOLDER_ID:-1_ad-SbUR5LxT954YhRJg5Pbeaz8v8ddu} \
+    HARRISON_HOST=$TARGET \
+    GDRIVE_FOLDER_ID=${GDRIVE_FOLDER_ID:?Set GDRIVE_FOLDER_ID before running} \
     REPO_SOURCES='${REPO_SOURCES:-}' \
     WEB_SOURCES='${WEB_SOURCES:-}' \
-    EMBED_THREADS=32 \
+    EMBED_THREADS=\$(nproc) \
     python3 ingest-remote.py"

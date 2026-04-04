@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""One-shot ingestion — runs on a remote host with FastEmbed locally.
+"""One-shot GPU ingestion — runs on a remote host with sentence-transformers.
 
-Embeds documents using all available CPU cores, then pushes chunks to
-Postgres and vectors to Qdrant on harrison (192.168.1.122).
+Embeds documents using CUDA (or all CPU cores as fallback), then pushes
+chunks to Postgres and vectors to Qdrant on a target host.
 
 Usage:
-    # From harrison, deploy and run on lennon:
-    # See deploy-to-lennon.sh
+    # Via deploy script:
+    ./deploy-remote.sh <gpu-host> [target-host]
 
-    # Or manually on lennon:
-    python3 ingest-remote.py
+    # Or manually:
+    HARRISON_HOST=<target-ip> GDRIVE_FOLDER_ID=<id> python3 ingest-remote.py
 """
 
 import hashlib
@@ -33,7 +33,7 @@ log = logging.getLogger("ingest-remote")
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-HARRISON = os.environ.get("HARRISON_HOST", "192.168.1.122")
+HARRISON = os.environ.get("HARRISON_HOST", "127.0.0.1")
 QDRANT_URL = os.environ.get("QDRANT_URL", f"http://{HARRISON}:6333")
 DOCSTORE_URL = os.environ.get("DOCSTORE_URL", f"postgresql://litellm:litellm@{HARRISON}:5432/litellm")
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "documents")
@@ -466,7 +466,7 @@ def ingest(docs: list[dict]) -> None:
     texts = [c["text"] for c in all_chunks]
     vectors = embed_texts_local(texts)
 
-    # Step 2: Push chunks to Postgres docstore on harrison
+    # Step 2: Push chunks to Postgres docstore on target host
     log.info("Connecting to Postgres at %s...", HARRISON)
     conn = psycopg2.connect(DOCSTORE_URL)
     conn.autocommit = True
@@ -496,7 +496,7 @@ def ingest(docs: list[dict]) -> None:
     conn.close()
     log.info("Persisted %d chunks to Postgres", len(all_chunks))
 
-    # Step 3: Upsert vectors to Qdrant on harrison
+    # Step 3: Upsert vectors to Qdrant on target host
     log.info("Connecting to Qdrant at %s...", QDRANT_URL)
     qdrant = QdrantClient(url=QDRANT_URL, timeout=60)
 

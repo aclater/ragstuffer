@@ -31,8 +31,11 @@ podman run --rm \
 For bulk ingestion, `ingest-remote.py` runs embedding on a GPU-equipped host using sentence-transformers (CUDA) and pushes results to Qdrant + Postgres over the network:
 
 ```bash
-# On a host with an NVIDIA GPU:
-./deploy-to-lennon.sh
+# Deploy to a remote GPU host, pushing data to a target host:
+GDRIVE_FOLDER_ID=your-folder-id ./deploy-remote.sh gpu-host.local target-host.local
+
+# Or embed and store on the same remote host:
+GDRIVE_FOLDER_ID=your-folder-id ./deploy-remote.sh gpu-host.local
 ```
 
 ## Configuration
