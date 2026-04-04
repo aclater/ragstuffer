@@ -9,7 +9,7 @@ Usage:
     ./deploy-remote.sh <gpu-host> [target-host]
 
     # Or manually:
-    HARRISON_HOST=<target-ip> GDRIVE_FOLDER_ID=<id> python3 ingest-remote.py
+    TARGET_HOST=<target-ip> GDRIVE_FOLDER_ID=<id> python3 ingest-remote.py
 """
 
 import hashlib
@@ -33,9 +33,9 @@ log = logging.getLogger("ingest-remote")
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-HARRISON = os.environ.get("HARRISON_HOST", "127.0.0.1")
-QDRANT_URL = os.environ.get("QDRANT_URL", f"http://{HARRISON}:6333")
-DOCSTORE_URL = os.environ.get("DOCSTORE_URL", f"postgresql://litellm:litellm@{HARRISON}:5432/litellm")
+TARGET_HOST_IP = os.environ.get("TARGET_HOST", "127.0.0.1")
+QDRANT_URL = os.environ.get("QDRANT_URL", f"http://{TARGET_HOST_IP}:6333")
+DOCSTORE_URL = os.environ.get("DOCSTORE_URL", f"postgresql://litellm:litellm@{TARGET_HOST_IP}:5432/litellm")
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "documents")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "BAAI/bge-base-en-v1.5")
 EMBED_THREADS = int(os.environ.get("EMBED_THREADS", os.cpu_count() or 4))
@@ -71,7 +71,7 @@ EXPORT_MAP = {
 }
 
 
-# ── Text extraction (same as rag-watcher.py) ────────────────────────────────
+# ── Text extraction (same as ragstuffer.py) ────────────────────────────────
 
 
 def extract_text(file_path: Path) -> str:
@@ -368,7 +368,7 @@ def load_web_docs() -> list[dict]:
     for url in urls:
         try:
             log.info("Web: fetching %s", url)
-            resp = requests.get(url, timeout=30, headers={"User-Agent": "rag-watcher/1.0"})
+            resp = requests.get(url, timeout=30, headers={"User-Agent": "ragstuffer/1.0"})
             resp.raise_for_status()
             if "html" in resp.headers.get("content-type", "").lower():
                 parser = TextExtractor()
@@ -467,7 +467,7 @@ def ingest(docs: list[dict]) -> None:
     vectors = embed_texts_local(texts)
 
     # Step 2: Push chunks to Postgres docstore on target host
-    log.info("Connecting to Postgres at %s...", HARRISON)
+    log.info("Connecting to Postgres at %s...", TARGET_HOST_IP)
     conn = psycopg2.connect(DOCSTORE_URL)
     conn.autocommit = True
     with conn.cursor() as cur:
@@ -548,9 +548,9 @@ def main() -> None:
     staging_dir.mkdir(parents=True, exist_ok=True)
     repos_dir.mkdir(parents=True, exist_ok=True)
 
-    log.info("One-shot ingestion — embedding locally, pushing to %s", HARRISON)
+    log.info("One-shot ingestion — embedding locally, pushing to %s", TARGET_HOST_IP)
     log.info("  Qdrant:     %s", QDRANT_URL)
-    log.info("  Postgres:   %s@%s", "litellm", HARRISON)
+    log.info("  Postgres:   %s@%s", "litellm", TARGET_HOST_IP)
     log.info("  Collection: %s", QDRANT_COLLECTION)
     log.info("  Model:      %s", EMBED_MODEL)
     log.info("  Threads:    %d", EMBED_THREADS)

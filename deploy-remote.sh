@@ -53,7 +53,7 @@ ssh "$REMOTE" "cd $REMOTE_DIR && \
 echo "=== Running ingestion ==="
 ssh "$REMOTE" "cd $REMOTE_DIR && \
     source venv/bin/activate && \
-    HARRISON_HOST=$TARGET \
+    TARGET_HOST=$TARGET \
     GDRIVE_FOLDER_ID=${GDRIVE_FOLDER_ID:?Set GDRIVE_FOLDER_ID before running} \
     REPO_SOURCES='${REPO_SOURCES:-}' \
     WEB_SOURCES='${WEB_SOURCES:-}' \
