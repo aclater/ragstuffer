@@ -1,0 +1,21 @@
+# ragstuffer — GPU-accelerated ingestion for NVIDIA CUDA GPUs
+# Base: rocm/pytorch replaced with NVIDIA's PyTorch base
+# Embeds locally using sentence-transformers on GPU
+#
+# Build: podman build -t ragstuffer:cuda -f Containerfile.cuda .
+# Run:   podman run --rm --security-opt label=disable --device nvidia.com/gpu=all \
+#          -e TARGET_HOST=<ip> -e GDRIVE_FOLDER_ID=<id> \
+#          ragstuffer:cuda python3 /app/ingest-remote.py
+
+FROM docker.io/pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime
+
+# Install ragstuffer dependencies + sentence-transformers (uses the pre-installed PyTorch)
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir \
+    -r /tmp/requirements.txt \
+    sentence-transformers
+
+WORKDIR /app
+COPY ragstuffer.py ingest-remote.py docstore.py /app/
+
+CMD ["python3", "/app/ragstuffer.py"]

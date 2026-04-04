@@ -1,0 +1,23 @@
+# ragstuffer — GPU-accelerated ingestion for AMD ROCm GPUs
+# Base: rocm/pytorch (Ubuntu 24.04, ROCm 7.2, PyTorch, Python 3.12)
+# Embeds locally using sentence-transformers on GPU instead of delegating to ragpipe
+#
+# Build: podman build -t ragstuffer:rocm -f Containerfile.rocm .
+# Run:   podman run --rm --security-opt label=disable --device /dev/kfd --device /dev/dri \
+#          -e HSA_OVERRIDE_GFX_VERSION=11.5.1 -e TARGET_HOST=<ip> \
+#          -e GDRIVE_FOLDER_ID=<id> ragstuffer:rocm python3 /app/ingest-remote.py
+
+FROM docker.io/rocm/pytorch:rocm7.2_ubuntu24.04_py3.12_pytorch_release_2.10.0
+
+# Install ragstuffer dependencies + sentence-transformers (uses the pre-installed PyTorch)
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --break-system-packages --no-cache-dir \
+    -r /tmp/requirements.txt \
+    sentence-transformers
+
+WORKDIR /app
+COPY ragstuffer.py ingest-remote.py docstore.py /app/
+
+# Default: run the poller (delegates to ragpipe for embedding)
+# For GPU ingestion: override CMD with python3 /app/ingest-remote.py
+CMD ["python3", "/app/ragstuffer.py"]
