@@ -617,18 +617,97 @@ def poll_once(staging_dir: Path, repos_dir: Path) -> None:
         log.warning("Ingestion failed — will retry next poll")
 
 
+def _start_admin_server(trigger_event, admin_port, admin_token):
+    """Run a minimal HTTP admin server for triggering ingestion.
+
+    Endpoints:
+      POST /admin/ingest-now   — trigger immediate poll (incremental)
+      POST /admin/ingest-full  — clear state + trigger full re-ingest
+      GET  /health             — liveness check
+    """
+    import json as _json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    class AdminHandler(BaseHTTPRequestHandler):
+        def _check_auth(self):
+            if not admin_token:
+                return True
+            auth = self.headers.get("Authorization", "")
+            if auth == f"Bearer {admin_token}":
+                return True
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(b'{"error":"unauthorized"}')
+            return False
+
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"ok"}')
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            if not self._check_auth():
+                return
+
+            if self.path == "/admin/ingest-now":
+                log.info("Admin trigger: ingest-now (incremental)")
+                trigger_event.set()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(_json.dumps({"status": "triggered", "mode": "incremental"}).encode())
+
+            elif self.path == "/admin/ingest-full":
+                log.info("Admin trigger: ingest-full (clearing state)")
+                if STATE_PATH.exists():
+                    STATE_PATH.unlink()
+                    log.info("Cleared state file: %s", STATE_PATH)
+                trigger_event.set()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(_json.dumps({"status": "triggered", "mode": "full"}).encode())
+
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            """Suppress default access logging — we log triggers explicitly."""
+
+    server = HTTPServer(("0.0.0.0", admin_port), AdminHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    log.info("Admin server listening on :%d", admin_port)
+    return server
+
+
 def main() -> None:
+    import threading
+
     interval = int(os.environ.get("WATCH_INTERVAL_MINUTES", "15"))
+    admin_port = int(os.environ.get("RAGSTUFFER_ADMIN_PORT", "8091"))
+    admin_token = os.environ.get("RAGSTUFFER_ADMIN_TOKEN", "")
     staging_dir = Path(os.environ.get("STAGING_DIR", "/tmp/rag-staging"))
     repos_dir = Path(os.environ.get("REPOS_DIR", "/tmp/rag-repos"))
 
     staging_dir.mkdir(parents=True, exist_ok=True)
     repos_dir.mkdir(parents=True, exist_ok=True)
 
+    # Event for admin-triggered immediate ingestion
+    trigger = threading.Event()
+
     log.info("Starting ragstuffer")
     log.info("  Qdrant:     %s", os.environ.get("QDRANT_URL", "http://127.0.0.1:6333"))
     log.info("  Collection: %s", os.environ.get("QDRANT_COLLECTION", "documents"))
     log.info("  Interval:   %d min", interval)
+    log.info("  Admin:      :%d", admin_port)
     if os.environ.get("GDRIVE_FOLDER_ID"):
         log.info("  Drive:      folder %s", os.environ["GDRIVE_FOLDER_ID"])
     if os.environ.get("REPO_SOURCES"):
@@ -636,12 +715,16 @@ def main() -> None:
     if os.environ.get("WEB_SOURCES"):
         log.info("  Web:        %s", os.environ["WEB_SOURCES"])
 
+    _start_admin_server(trigger, admin_port, admin_token)
+
     while True:
         try:
             poll_once(staging_dir, repos_dir)
         except Exception:
             log.exception("Poll cycle failed")
-        time.sleep(interval * 60)
+        # Wait for interval OR admin trigger, whichever comes first
+        trigger.wait(timeout=interval * 60)
+        trigger.clear()
 
 
 if __name__ == "__main__":

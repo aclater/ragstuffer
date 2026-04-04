@@ -74,6 +74,26 @@ GDRIVE_FOLDER_ID=your-folder-id ./deploy-remote.sh gpu-host.local
 | `DOCSTORE_BACKEND` | `postgres` | `postgres` or `sqlite` |
 | `DOCSTORE_URL` | *(required)* | Postgres connection string |
 | `GOOGLE_APPLICATION_CREDENTIALS` | — | Path to service account key |
+| `RAGSTUFFER_ADMIN_PORT` | `8091` | Admin API listen port |
+| `RAGSTUFFER_ADMIN_TOKEN` | *(none)* | Bearer token for admin endpoints (set to secure access) |
+
+## Admin API
+
+Ragstuffer runs a lightweight admin server for triggering ingestion without waiting for the poll interval.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/ingest-now` | POST | Trigger immediate incremental ingestion |
+| `/admin/ingest-full` | POST | Clear state file + trigger full re-ingest of all documents |
+| `/health` | GET | Liveness check |
+
+```bash
+# Trigger immediate ingestion
+curl -X POST http://localhost:8091/admin/ingest-now -H "Authorization: Bearer <token>"
+
+# Force full re-ingest (re-downloads everything)
+curl -X POST http://localhost:8091/admin/ingest-full -H "Authorization: Bearer <token>"
+```
 
 ### GPU ingestion (`ingest-remote.py`)
 
