@@ -23,7 +23,7 @@ echo "=== Deploying to $REMOTE (target: $TARGET) ==="
 
 # Create remote directory and copy files
 ssh "$REMOTE" "mkdir -p $REMOTE_DIR"
-scp ingest-remote.py "$REMOTE:$REMOTE_DIR/"
+scp ingest-remote.py common.py "$REMOTE:$REMOTE_DIR/"
 
 # Copy SA key if it exists
 if [[ -f "$SA_KEY" ]]; then

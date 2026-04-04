@@ -208,7 +208,7 @@ def load_git_docs(repos_dir: Path) -> list[dict]:
                 if text:
                     docs.append({"text": text, "source": f"{url}@{rel}"})
             except Exception:
-                log.warning("Git: failed to extract %s", file_path)
+                log.warning("Git: failed to extract %s — skipping", file_path)
 
     log.info("Git: loaded %d documents from %d repos", len(docs), len(sources))
     return docs

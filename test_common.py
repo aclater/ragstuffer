@@ -1,17 +1,7 @@
-"""Tests for common.py — extract_text, chunk_text, extract_html_text, constants.
-
-NOTE: test_ragstuffer.py stubs langchain_text_splitters for module-level import.
-We restore the real module here so chunk_text tests exercise the actual splitter.
-"""
+"""Tests for common.py — extract_text, chunk_text, extract_html_text, constants."""
 
 import sys
 from unittest.mock import MagicMock
-
-# Remove any MagicMock stub so the real langchain_text_splitters is used
-if "langchain_text_splitters" in sys.modules and isinstance(
-    sys.modules["langchain_text_splitters"], MagicMock
-):
-    del sys.modules["langchain_text_splitters"]
 
 from pathlib import Path
 
@@ -146,7 +136,17 @@ class TestExtractHtmlText:
 # ── chunk_text ───────────────────────────────────────────────────────────────
 
 
+def _ensure_real_langchain():
+    """Remove any MagicMock stub of langchain_text_splitters injected by other test files."""
+    mod = sys.modules.get("langchain_text_splitters")
+    if mod is not None and isinstance(mod, MagicMock):
+        del sys.modules["langchain_text_splitters"]
+
+
 class TestChunkText:
+    def setup_method(self):
+        _ensure_real_langchain()
+
     def test_short_text_single_chunk(self):
         text = "Hello world, this is a short text."
         chunks = chunk_text(text, chunk_size=1024, overlap=128)
