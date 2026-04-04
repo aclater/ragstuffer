@@ -9,6 +9,48 @@ from pathlib import Path
 
 log = logging.getLogger("ragstuffer.common")
 
+# ── Lazy-loaded optional dependencies ─────────────────────────────────────────
+# Cached at module level to avoid repeated sys.modules lookups across
+# hundreds of extract_text() calls during bulk ingestion.
+
+_pypdf = None
+_docx = None
+_Presentation = None
+_openpyxl = None
+
+
+def _get_pypdf():
+    global _pypdf
+    if _pypdf is None:
+        import pypdf
+        _pypdf = pypdf
+    return _pypdf
+
+
+def _get_docx():
+    global _docx
+    if _docx is None:
+        import docx
+        _docx = docx
+    return _docx
+
+
+def _get_presentation():
+    global _Presentation
+    if _Presentation is None:
+        from pptx import Presentation
+        _Presentation = Presentation
+    return _Presentation
+
+
+def _get_openpyxl():
+    global _openpyxl
+    if _openpyxl is None:
+        import openpyxl
+        _openpyxl = openpyxl
+    return _openpyxl
+
+
 # ── File type constants ───────────────────────────────────────────────────────
 
 SUPPORTED_TEXT_EXTENSIONS = {".md", ".txt", ".adoc", ".rst"}
@@ -83,9 +125,7 @@ def extract_text(file_path: Path) -> str:
 
     if ext == ".pdf":
         try:
-            import pypdf
-
-            reader = pypdf.PdfReader(str(file_path))
+            reader = _get_pypdf().PdfReader(str(file_path))
             return "\n\n".join(page.extract_text() or "" for page in reader.pages)
         except Exception:
             log.warning("Failed to extract text from PDF: %s", file_path.name)
@@ -93,9 +133,7 @@ def extract_text(file_path: Path) -> str:
 
     if ext == ".docx":
         try:
-            import docx
-
-            doc = docx.Document(str(file_path))
+            doc = _get_docx().Document(str(file_path))
             return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
         except Exception:
             log.warning("Failed to extract text from DOCX: %s", file_path.name)
@@ -103,9 +141,7 @@ def extract_text(file_path: Path) -> str:
 
     if ext == ".pptx":
         try:
-            from pptx import Presentation
-
-            prs = Presentation(str(file_path))
+            prs = _get_presentation()(str(file_path))
             texts = []
             for slide in prs.slides:
                 for shape in slide.shapes:
@@ -118,9 +154,7 @@ def extract_text(file_path: Path) -> str:
 
     if ext == ".xlsx":
         try:
-            import openpyxl
-
-            wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
+            wb = _get_openpyxl().load_workbook(str(file_path), read_only=True, data_only=True)
             texts = []
             for ws in wb.worksheets:
                 for row in ws.iter_rows(values_only=True):

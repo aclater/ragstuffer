@@ -13,7 +13,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 import uuid
 from datetime import UTC
 from pathlib import Path
@@ -306,21 +305,35 @@ def embed_texts(texts: list[str], batch_size: int = 64) -> list[list[float]]:
     """Embed texts via ragpipe's /v1/embeddings endpoint.
 
     Delegates to ragpipe instead of loading a local model — saves ~1-2 GB RAM.
-    Batches requests to avoid oversized payloads.
+    Sends batches in parallel (up to 4 concurrent) with connection pooling.
+    Output order is preserved via batch indexing.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     import requests
 
     embed_url = os.environ.get("EMBED_URL", "http://127.0.0.1:8090/v1/embeddings")
-    vectors = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        resp = requests.post(embed_url, json={"input": batch}, timeout=120)
+    session = requests.Session()
+
+    def _embed_batch(batch_idx: int, batch: list[str]) -> tuple[int, list[list[float]]]:
+        resp = session.post(embed_url, json={"input": batch}, timeout=120)
         resp.raise_for_status()
         data = resp.json()["data"]
-        # Sort by index to preserve order
         data.sort(key=lambda x: x["index"])
-        vectors.extend([d["embedding"] for d in data])
-    return vectors
+        return batch_idx, [d["embedding"] for d in data]
+
+    batches = [(i, texts[i : i + batch_size]) for i in range(0, len(texts), batch_size)]
+    results: list[list[list[float]] | None] = [None] * len(batches)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(_embed_batch, idx, batch): idx for idx, (_, batch) in enumerate(batches)
+        }
+        for future in as_completed(futures):
+            batch_idx, vectors = future.result()
+            results[batch_idx] = vectors
+
+    return [v for batch in results for v in batch]
 
 
 def ensure_collection(qdrant, collection_name: str, vector_size: int):
@@ -448,16 +461,19 @@ def ingest_docs(docs: list[dict]) -> bool:
 
 def poll_once(staging_dir: Path, repos_dir: Path) -> None:
     """Single poll iteration: gather docs from all sources, ingest into Qdrant."""
+    from concurrent.futures import ThreadPoolExecutor
+
     all_docs = []
 
-    # Google Drive
-    all_docs.extend(load_drive_docs(staging_dir))
-
-    # Git repos
-    all_docs.extend(load_git_docs(repos_dir))
-
-    # Web URLs
-    all_docs.extend(load_web_docs())
+    # Load from all sources in parallel — they are independent I/O operations
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [
+            executor.submit(load_drive_docs, staging_dir),
+            executor.submit(load_git_docs, repos_dir),
+            executor.submit(load_web_docs),
+        ]
+        for future in futures:
+            all_docs.extend(future.result())
 
     if not all_docs:
         log.info("No documents to process from any source")
@@ -480,8 +496,8 @@ def _start_admin_server(trigger_event, admin_port, admin_token):
       GET  /health             — liveness check
     """
     import json as _json
-    from http.server import BaseHTTPRequestHandler, HTTPServer
     import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class AdminHandler(BaseHTTPRequestHandler):
         def _check_auth(self):
