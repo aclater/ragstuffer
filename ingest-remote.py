@@ -29,9 +29,10 @@ from common import (
     ALL_EXTENSIONS,
     EXPORT_MAP,
     GDRIVE_SCOPES,
+    _extract_html_title,
     chunk_text,
     extract_html_text,
-    extract_text,
+    extract_text_with_title,
 )
 
 logging.basicConfig(
@@ -136,9 +137,9 @@ def load_drive_docs(staging_dir: Path) -> list[dict]:
     for f in downloaded:
         if not f.is_file():
             continue
-        text = extract_text(f)
-        if text:
-            docs.append({"text": text, "source": f"gdrive://{f.name}"})
+        extracted = extract_text_with_title(f)
+        if extracted.text:
+            docs.append({"text": extracted.text, "source": f"gdrive://{f.name}", "title": extracted.title})
         else:
             log.warning("Drive: no text from %s", f.name)
         f.unlink(missing_ok=True)
@@ -204,9 +205,9 @@ def load_git_docs(repos_dir: Path) -> list[dict]:
                 continue
             try:
                 rel = file_path.relative_to(repo_path)
-                text = extract_text(file_path)
-                if text:
-                    docs.append({"text": text, "source": f"{url}@{rel}"})
+                extracted = extract_text_with_title(file_path)
+                if extracted.text:
+                    docs.append({"text": extracted.text, "source": f"{url}@{rel}", "title": extracted.title})
             except Exception:
                 log.warning("Git: failed to extract %s — skipping", file_path)
 
@@ -237,10 +238,12 @@ def load_web_docs() -> list[dict]:
             resp.raise_for_status()
             if "html" in resp.headers.get("content-type", "").lower():
                 text = extract_html_text(resp.text)
+                title = _extract_html_title(resp.text)
             else:
                 text = resp.text
+                title = ""
             if text.strip():
-                docs.append({"text": text, "source": url})
+                docs.append({"text": text, "source": url, "title": title})
             else:
                 log.warning("Web: no text extracted from %s", url)
         except Exception:
@@ -334,9 +337,11 @@ def ingest(docs: list[dict]) -> None:
 
     # Chunk all documents
     all_chunks = []
+    source_types: set[str] = set()
     for doc in docs:
         doc_id = str(uuid.uuid5(uuid.NAMESPACE_URL, doc["source"]))
         chunks = chunk_text(doc["text"], chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
+        title = doc.get("title", "")
         for i, chunk in enumerate(chunks):
             all_chunks.append(
                 {
@@ -344,8 +349,10 @@ def ingest(docs: list[dict]) -> None:
                     "chunk_id": i,
                     "text": chunk,
                     "source": doc["source"],
+                    "title": title,
                 }
             )
+        source_types.add(_classify_source_type(doc["source"]))
         log.info("Chunked %s -> %d chunks (doc_id=%s)", doc["source"], len(chunks), doc_id)
 
     if not all_chunks:
@@ -369,24 +376,28 @@ def ingest(docs: list[dict]) -> None:
                 chunk_id   INTEGER NOT NULL,
                 text       TEXT NOT NULL,
                 source     TEXT NOT NULL DEFAULT '',
+                title      TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (doc_id, chunk_id)
             )
         """)
         now = datetime.now(UTC).isoformat()
-        values = [(c["doc_id"], c["chunk_id"], c["text"], c["source"], now) for c in all_chunks]
+        values = [(c["doc_id"], c["chunk_id"], c["text"], c["source"], c.get("title", ""), now) for c in all_chunks]
         execute_values(
             cur,
             """
-            INSERT INTO chunks (doc_id, chunk_id, text, source, created_at)
+            INSERT INTO chunks (doc_id, chunk_id, text, source, title, created_at)
             VALUES %s
             ON CONFLICT (doc_id, chunk_id)
-            DO UPDATE SET text = EXCLUDED.text, source = EXCLUDED.source
+            DO UPDATE SET text = EXCLUDED.text, source = EXCLUDED.source, title = EXCLUDED.title
             """,
             values,
         )
     conn.close()
     log.info("Persisted %d chunks to Postgres", len(all_chunks))
+
+    # Register collection in Postgres (non-fatal if table missing)
+    _register_collection(QDRANT_COLLECTION, source_types)
 
     # Step 3: Upsert vectors to Qdrant on target host
     log.info("Connecting to Qdrant at %s...", QDRANT_URL)
@@ -429,6 +440,66 @@ def ingest(docs: list[dict]) -> None:
             log.info("Qdrant upsert: %d/%d points", min(i + batch_size, len(points)), len(points))
 
     log.info("Ingested %d points into Qdrant collection '%s'", len(points), QDRANT_COLLECTION)
+
+
+def _classify_source_type(source: str) -> str:
+    """Classify a document source string into a source type category."""
+    if source.startswith("gdrive://"):
+        return "drive"
+    if source.startswith("http://") or source.startswith("https://"):
+        if "@" in source.split("//", 1)[1]:
+            return "git"
+        return "web"
+    return "git"
+
+
+def _register_collection(collection_name: str, source_types: set[str]) -> None:
+    """Upsert a row in the collections table on first ingest.
+
+    If the collections table does not exist (migrations not run), logs a
+    clear warning and skips — ingestion continues normally.
+    """
+    from datetime import datetime
+
+    import psycopg2
+
+    try:
+        conn = psycopg2.connect(DOCSTORE_URL)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            now = datetime.now(UTC).isoformat()
+            source_types_json = json.dumps(sorted(source_types))
+            cur.execute(
+                """
+                INSERT INTO collections (name, source_types, updated_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (name)
+                DO UPDATE SET
+                    source_types = COALESCE(
+                        (SELECT jsonb_agg(DISTINCT elem ORDER BY elem)
+                         FROM (
+                             SELECT jsonb_array_elements_text(collections.source_types::jsonb) AS elem
+                             UNION
+                             SELECT jsonb_array_elements_text(%s::jsonb) AS elem
+                         ) sub
+                        ),
+                        %s
+                    ),
+                    updated_at = %s
+                """,
+                (collection_name, source_types_json, source_types_json, source_types_json, now),
+            )
+        conn.close()
+        log.info("Registered collection '%s' with source types %s", collection_name, source_types)
+    except Exception as e:
+        err_msg = str(e)
+        if "relation \"collections\" does not exist" in err_msg or "no such table" in err_msg:
+            log.warning(
+                "collections table not found — skipping collection registration. "
+                "Run rag-suite migrations first."
+            )
+        else:
+            log.warning("Failed to register collection '%s': %s", collection_name, err_msg)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

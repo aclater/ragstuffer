@@ -5,6 +5,8 @@ constants that were previously duplicated between the two scripts.
 """
 
 import logging
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger("ragstuffer.common")
@@ -75,7 +77,19 @@ EXPORT_MAP = {
 }
 
 
+# ── ExtractedText ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class ExtractedText:
+    text: str
+    title: str = ""
+
+
 # ── HTML text extraction ─────────────────────────────────────────────────────
+
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.DOTALL | re.IGNORECASE)
+
 
 def _make_html_parser():
     """Create an HTML parser that strips scripts/styles/nav and returns text."""
@@ -103,41 +117,114 @@ def _make_html_parser():
     return _HTMLTextExtractor()
 
 
+def _extract_html_title(raw: str) -> str:
+    """Extract the <title> tag content from raw HTML, or return empty string."""
+    m = _TITLE_RE.search(raw)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
 # ── Text extraction ──────────────────────────────────────────────────────────
+
+
+def _extract_title_from_text(content: str) -> str:
+    """Extract a title from plain-text content (Markdown heading, AsciiDoc, RST)."""
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# ") and not stripped.startswith("# " * 2):
+            return stripped[2:].strip()
+        if stripped.startswith("= ") and not stripped.startswith("== "):
+            return stripped[2:].strip()
+        break
+    return ""
+
+
+def _extract_title_from_rst(content: str) -> str:
+    """Extract title from reStructuredText (Title\n===== pattern)."""
+    lines = content.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and i + 1 < len(lines):
+            next_line = lines[i + 1].strip()
+            if next_line and all(c in ("=", "-", "~", "^") for c in next_line) and len(next_line) >= len(stripped):
+                return stripped
+    return ""
 
 
 def extract_text(file_path: Path) -> str:
     """Extract text from a file based on its extension. Logs warnings on failure."""
+    return extract_text_with_title(file_path).text
+
+
+def extract_text_with_title(file_path: Path) -> ExtractedText:
+    """Extract text and title from a file based on its extension.
+
+    Title fallback chain per source type:
+      - PDF:     /Title metadata → filename stem → ""
+      - DOCX:    core_properties.title → filename stem → ""
+      - PPTX:    core_properties.title → filename stem → ""
+      - XLSX:    filename stem → ""
+      - HTML:    <title> tag → filename stem → ""
+      - Markdown: first # heading → filename stem → ""
+      - RST:     Title\n===== → filename stem → ""
+      - Adoc:    = Title → filename stem → ""
+      - Plain text: filename stem → ""
+    """
     ext = file_path.suffix.lower()
+    stem = file_path.stem
 
     if ext in SUPPORTED_TEXT_EXTENSIONS:
-        return file_path.read_text(errors="replace")
+        try:
+            content = file_path.read_text(errors="replace")
+        except Exception:
+            log.warning("Failed to read text file: %s", file_path.name)
+            return ExtractedText(text="", title="")
+
+        title = ""
+        if ext == ".md":
+            title = _extract_title_from_text(content)
+        elif ext == ".adoc":
+            title = _extract_title_from_text(content)
+        elif ext == ".rst":
+            title = _extract_title_from_rst(content)
+
+        return ExtractedText(text=content, title=title or stem)
 
     if ext in SUPPORTED_HTML_EXTENSIONS:
         try:
             raw = file_path.read_text(errors="replace")
+            title = _extract_html_title(raw) or stem
             parser = _make_html_parser()
             parser.feed(raw)
-            return "\n".join(parser.parts)
+            return ExtractedText(text="\n".join(parser.parts), title=title)
         except Exception:
             log.warning("Failed to extract text from HTML: %s", file_path.name)
-            return ""
+            return ExtractedText(text="", title=stem)
 
     if ext == ".pdf":
         try:
             reader = _get_pypdf().PdfReader(str(file_path))
-            return "\n\n".join(page.extract_text() or "" for page in reader.pages)
+            text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+            title = ""
+            if reader.metadata and reader.metadata.get("/Title"):
+                title = reader.metadata["/Title"].strip()
+            return ExtractedText(text=text, title=title or stem)
         except Exception:
             log.warning("Failed to extract text from PDF: %s", file_path.name)
-            return ""
+            return ExtractedText(text="", title=stem)
 
     if ext == ".docx":
         try:
             doc = _get_docx().Document(str(file_path))
-            return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            text = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            title = ""
+            if doc.core_properties.title:
+                title = doc.core_properties.title.strip()
+            return ExtractedText(text=text, title=title or stem)
         except Exception:
             log.warning("Failed to extract text from DOCX: %s", file_path.name)
-            return ""
+            return ExtractedText(text="", title=stem)
 
     if ext == ".pptx":
         try:
@@ -147,10 +234,14 @@ def extract_text(file_path: Path) -> str:
                 for shape in slide.shapes:
                     if shape.has_text_frame:
                         texts.append(shape.text_frame.text)
-            return "\n\n".join(texts)
+            text = "\n\n".join(texts)
+            title = ""
+            if prs.core_properties.title:
+                title = prs.core_properties.title.strip()
+            return ExtractedText(text=text, title=title or stem)
         except Exception:
             log.warning("Failed to extract text from PPTX: %s", file_path.name)
-            return ""
+            return ExtractedText(text="", title=stem)
 
     if ext == ".xlsx":
         try:
@@ -161,12 +252,13 @@ def extract_text(file_path: Path) -> str:
                     vals = [str(c) for c in row if c is not None]
                     if vals:
                         texts.append(" | ".join(vals))
-            return "\n".join(texts)
+            text = "\n".join(texts)
+            return ExtractedText(text=text, title=stem)
         except Exception:
             log.warning("Failed to extract text from XLSX: %s", file_path.name)
-            return ""
+            return ExtractedText(text="", title=stem)
 
-    return ""
+    return ExtractedText(text="", title="")
 
 
 # ── Chunking ─────────────────────────────────────────────────────────────────

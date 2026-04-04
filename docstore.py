@@ -13,6 +13,7 @@ Schema:
     chunk_id  INTEGER — stable integer offset within the document
     text      TEXT    — full chunk content
     source    TEXT    — filename or URI for observability
+    title     TEXT    — document title (denormalised, same for all chunks of a doc)
     created_at TEXT   — ISO8601 timestamp
     PRIMARY KEY (doc_id, chunk_id)
 """
@@ -37,12 +38,12 @@ class DocstoreBackend(ABC):
         """Create tables if they don't exist."""
 
     @abstractmethod
-    def upsert_chunk(self, doc_id: str, chunk_id: int, text: str, source: str) -> None:
+    def upsert_chunk(self, doc_id: str, chunk_id: int, text: str, source: str, title: str = "") -> None:
         """Insert or update a single chunk. Upsert on (doc_id, chunk_id)."""
 
     @abstractmethod
     def upsert_chunks(self, chunks: list[dict]) -> None:
-        """Batch upsert. Each dict has: doc_id, chunk_id, text, source."""
+        """Batch upsert. Each dict has: doc_id, chunk_id, text, source, title."""
 
     @abstractmethod
     def get_chunk(self, doc_id: str, chunk_id: int) -> str | None:
@@ -87,23 +88,25 @@ class PostgresDocstore(DocstoreBackend):
                     chunk_id   INTEGER NOT NULL,
                     text       TEXT NOT NULL,
                     source     TEXT NOT NULL DEFAULT '',
+                    title      TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (doc_id, chunk_id)
                 )
             """)
+            cur.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''")
 
-    def upsert_chunk(self, doc_id: str, chunk_id: int, text: str, source: str) -> None:
+    def upsert_chunk(self, doc_id: str, chunk_id: int, text: str, source: str, title: str = "") -> None:
         now = datetime.now(UTC).isoformat()
         conn = self._get_sync_conn()
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO chunks (doc_id, chunk_id, text, source, created_at)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO chunks (doc_id, chunk_id, text, source, title, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (doc_id, chunk_id)
-                DO UPDATE SET text = EXCLUDED.text, source = EXCLUDED.source
+                DO UPDATE SET text = EXCLUDED.text, source = EXCLUDED.source, title = EXCLUDED.title
             """,
-                (doc_id, chunk_id, text, source, now),
+                (doc_id, chunk_id, text, source, title, now),
             )
 
     def upsert_chunks(self, chunks: list[dict]) -> None:
@@ -112,14 +115,14 @@ class PostgresDocstore(DocstoreBackend):
         with conn.cursor() as cur:
             from psycopg2.extras import execute_values
 
-            values = [(c["doc_id"], c["chunk_id"], c["text"], c["source"], now) for c in chunks]
+            values = [(c["doc_id"], c["chunk_id"], c["text"], c["source"], c.get("title", ""), now) for c in chunks]
             execute_values(
                 cur,
                 """
-                INSERT INTO chunks (doc_id, chunk_id, text, source, created_at)
+                INSERT INTO chunks (doc_id, chunk_id, text, source, title, created_at)
                 VALUES %s
                 ON CONFLICT (doc_id, chunk_id)
-                DO UPDATE SET text = EXCLUDED.text, source = EXCLUDED.source
+                DO UPDATE SET text = EXCLUDED.text, source = EXCLUDED.source, title = EXCLUDED.title
             """,
                 values,
             )
@@ -196,22 +199,23 @@ class SQLiteDocstore(DocstoreBackend):
                 chunk_id   INTEGER NOT NULL,
                 text       TEXT NOT NULL,
                 source     TEXT NOT NULL DEFAULT '',
+                title      TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (doc_id, chunk_id)
             )
         """)
         self._conn.commit()
 
-    def upsert_chunk(self, doc_id: str, chunk_id: int, text: str, source: str) -> None:
+    def upsert_chunk(self, doc_id: str, chunk_id: int, text: str, source: str, title: str = "") -> None:
         now = datetime.now(UTC).isoformat()
         self._conn.execute(
             """
-            INSERT INTO chunks (doc_id, chunk_id, text, source, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO chunks (doc_id, chunk_id, text, source, title, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (doc_id, chunk_id)
-            DO UPDATE SET text = excluded.text, source = excluded.source
+            DO UPDATE SET text = excluded.text, source = excluded.source, title = excluded.title
         """,
-            (doc_id, chunk_id, text, source, now),
+            (doc_id, chunk_id, text, source, title, now),
         )
         self._conn.commit()
 
@@ -219,12 +223,12 @@ class SQLiteDocstore(DocstoreBackend):
         now = datetime.now(UTC).isoformat()
         self._conn.executemany(
             """
-            INSERT INTO chunks (doc_id, chunk_id, text, source, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO chunks (doc_id, chunk_id, text, source, title, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (doc_id, chunk_id)
-            DO UPDATE SET text = excluded.text, source = excluded.source
+            DO UPDATE SET text = excluded.text, source = excluded.source, title = excluded.title
         """,
-            [(c["doc_id"], c["chunk_id"], c["text"], c["source"], now) for c in chunks],
+            [(c["doc_id"], c["chunk_id"], c["text"], c["source"], c.get("title", ""), now) for c in chunks],
         )
         self._conn.commit()
 
@@ -271,8 +275,8 @@ class CachedDocstore:
     def init_schema(self) -> None:
         self._backend.init_schema()
 
-    def upsert_chunk(self, doc_id: str, chunk_id: int, text: str, source: str) -> None:
-        self._backend.upsert_chunk(doc_id, chunk_id, text, source)
+    def upsert_chunk(self, doc_id: str, chunk_id: int, text: str, source: str, title: str = "") -> None:
+        self._backend.upsert_chunk(doc_id, chunk_id, text, source, title)
         self._cache_put((doc_id, chunk_id), text)
 
     def upsert_chunks(self, chunks: list[dict]) -> None:

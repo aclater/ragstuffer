@@ -21,9 +21,11 @@ from common import (
     ALL_EXTENSIONS,
     EXPORT_MAP,
     GDRIVE_SCOPES,
+    _extract_html_title,
     chunk_text,
     extract_html_text,
     extract_text,
+    extract_text_with_title,
 )
 
 logging.basicConfig(
@@ -126,7 +128,7 @@ def download_drive_file(service, file_info: dict, staging_dir: Path) -> Path | N
 
 
 def load_drive_docs(staging_dir: Path) -> list[dict]:
-    """Load Drive documents: return list of {text, source} dicts."""
+    """Load Drive documents: return list of {text, source, title} dicts."""
     folder_id = os.environ.get("GDRIVE_FOLDER_ID")
     if not folder_id:
         return []
@@ -164,9 +166,9 @@ def load_drive_docs(staging_dir: Path) -> list[dict]:
     for f in downloaded:
         if not f.is_file():
             continue
-        text = extract_text(f)
-        if text:
-            docs.append({"text": text, "source": f"gdrive://{f.name}"})
+        extracted = extract_text_with_title(f)
+        if extracted.text:
+            docs.append({"text": extracted.text, "source": f"gdrive://{f.name}", "title": extracted.title})
         else:
             log.warning("Drive: no text extracted from %s", f.name)
         f.unlink(missing_ok=True)
@@ -238,9 +240,9 @@ def load_git_docs(repos_dir: Path) -> list[dict]:
                 continue
             try:
                 rel = file_path.relative_to(repo_path)
-                text = extract_text(file_path)
-                if text:
-                    docs.append({"text": text, "source": f"{url}@{rel}"})
+                extracted = extract_text_with_title(file_path)
+                if extracted.text:
+                    docs.append({"text": extracted.text, "source": f"{url}@{rel}", "title": extracted.title})
             except Exception:
                 log.warning("Git: failed to extract %s — skipping", file_path)
 
@@ -277,11 +279,13 @@ def load_web_docs() -> list[dict]:
 
             if "html" in resp.headers.get("content-type", "").lower():
                 text = extract_html_text(resp.text)
+                title = _extract_html_title(resp.text)
             else:
                 text = resp.text
+                title = ""
 
             if text.strip():
-                docs.append({"text": text, "source": url})
+                docs.append({"text": text, "source": url, "title": title})
             else:
                 log.warning("Web: no text extracted from %s", url)
         except Exception:
@@ -381,7 +385,7 @@ def _get_docstore():
 def ingest_docs(docs: list[dict]) -> bool:
     """Chunk documents, persist to docstore, embed, and upsert references to Qdrant.
 
-    Qdrant payloads contain only {doc_id, chunk_id, source, created_at}.
+    Qdrant payloads contain only {doc_id, chunk_id, source, title, created_at}.
     Full chunk text lives in the document store.
     """
     from datetime import datetime
@@ -398,9 +402,11 @@ def ingest_docs(docs: list[dict]) -> bool:
 
     # Chunk all documents and assign stable doc_id per source
     all_chunks = []
+    source_types: set[str] = set()
     for doc in docs:
         doc_id = str(uuid.uuid5(uuid.NAMESPACE_URL, doc["source"]))
         chunks = chunk_text(doc["text"], chunk_size, chunk_overlap)
+        title = doc.get("title", "")
         for i, chunk in enumerate(chunks):
             all_chunks.append(
                 {
@@ -408,8 +414,10 @@ def ingest_docs(docs: list[dict]) -> bool:
                     "chunk_id": i,
                     "text": chunk,
                     "source": doc["source"],
+                    "title": title,
                 }
             )
+        source_types.add(_classify_source_type(doc["source"]))
         log.info("Chunked %s → %d chunks (doc_id=%s)", doc["source"], len(chunks), doc_id)
 
     if not all_chunks:
@@ -420,6 +428,9 @@ def ingest_docs(docs: list[dict]) -> bool:
     docstore = _get_docstore()
     docstore.upsert_chunks(all_chunks)
     log.info("Persisted %d chunks to docstore", len(all_chunks))
+
+    # Step 1b: Register collection in Postgres (non-fatal if table missing)
+    _register_collection(collection_name, source_types)
 
     # Step 2: Embed chunk texts via ragpipe (no local model needed)
     embed_batch_size = int(os.environ.get("EMBED_BATCH_SIZE", "64"))
@@ -442,6 +453,7 @@ def ingest_docs(docs: list[dict]) -> bool:
                 "doc_id": chunk["doc_id"],
                 "chunk_id": chunk["chunk_id"],
                 "source": chunk["source"],
+                "title": chunk["title"],
                 "created_at": now,
             },
         )
@@ -454,6 +466,66 @@ def ingest_docs(docs: list[dict]) -> bool:
 
     log.info("Ingested %d reference points into Qdrant collection '%s'", len(points), collection_name)
     return True
+
+
+def _classify_source_type(source: str) -> str:
+    """Classify a document source string into a source type category."""
+    if source.startswith("gdrive://"):
+        return "drive"
+    if source.startswith("http://") or source.startswith("https://"):
+        if "@" in source.split("//", 1)[1]:
+            return "git"
+        return "web"
+    return "git"
+
+
+def _register_collection(collection_name: str, source_types: set[str]) -> None:
+    """Upsert a row in the collections table on first ingest.
+
+    If the collections table does not exist (migrations not run), logs a
+    clear warning and skips — ingestion continues normally.
+    """
+    from datetime import datetime
+
+    try:
+        docstore = _get_docstore()
+        backend = docstore._backend
+        if not hasattr(backend, "_get_sync_conn"):
+            return
+        conn = backend._get_sync_conn()
+        with conn.cursor() as cur:
+            now = datetime.now(UTC).isoformat()
+            source_types_json = json.dumps(sorted(source_types))
+            cur.execute(
+                """
+                INSERT INTO collections (name, source_types, updated_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (name)
+                DO UPDATE SET
+                    source_types = COALESCE(
+                        (SELECT jsonb_agg(DISTINCT elem ORDER BY elem)
+                         FROM (
+                             SELECT jsonb_array_elements_text(collections.source_types::jsonb) AS elem
+                             UNION
+                             SELECT jsonb_array_elements_text(%s::jsonb) AS elem
+                         ) sub
+                        ),
+                        %s
+                    ),
+                    updated_at = %s
+                """,
+                (collection_name, source_types_json, source_types_json, source_types_json, now),
+            )
+        log.info("Registered collection '%s' with source types %s", collection_name, source_types)
+    except Exception as e:
+        err_msg = str(e)
+        if "relation \"collections\" does not exist" in err_msg or "no such table" in err_msg:
+            log.warning(
+                "collections table not found — skipping collection registration. "
+                "Run rag-suite migrations first."
+            )
+        else:
+            log.warning("Failed to register collection '%s': %s", collection_name, err_msg)
 
 
 # ── Poll loop ────────────────────────────────────────────────────────────────
