@@ -29,4 +29,4 @@ jobs:
       - name: Install dependencies
         run: pip install --quiet -r requirements.txt pytest
       - name: Run tests
-        run: python -m pytest test_ragstuffer.py -v
+        run: python -m pytest -v
