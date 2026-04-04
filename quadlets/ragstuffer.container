@@ -1,0 +1,40 @@
+[Unit]
+Description=ragstuffer — ingest documents into Qdrant from Drive/Git/Web
+After=network-online.target
+
+[Container]
+Image=localhost/ragstuffer:latest
+ContainerName=ragstuffer
+
+# Mount app code for dev workflow (matches Containerfile WORKDIR /app)
+Volume=%h/git/ragstuffer:/app:ro,Z
+
+# Service account key (read-only, not baked into image)
+Volume=%h/.config/ramalama/gdrive-sa.json:/run/secrets/gdrive-sa.json:ro,Z
+
+# Staging and repos directories for downloaded content
+Volume=ragstuffer-staging:/tmp/rag-staging:Z
+Volume=ragstuffer-repos:/tmp/rag-repos:Z
+
+# State file persistence across restarts
+Volume=%h/.local/share/ramalama:/state:Z
+
+# Environment from shared config
+EnvironmentFile=%h/.config/llm-stack/env
+
+# Overrides — ragstuffer-specific
+Environment=GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gdrive-sa.json
+Environment=RAG_STATE_FILE=/state/rag-state.json
+
+# Run as non-root
+User=1000
+
+# Networking — needs access to Qdrant and ragpipe on the host
+Network=host
+
+[Service]
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

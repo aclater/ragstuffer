@@ -102,15 +102,29 @@ curl -X POST http://localhost:8091/admin/ingest-full -H "Authorization: Bearer <
 | `TARGET_HOST` | `127.0.0.1` | Hostname/IP of Qdrant + Postgres target |
 | `RAGSTUFFER_DEVICE` | *(auto-detect)* | Force device: `cuda`, `xpu`, or `cpu` |
 | `EMBED_MODEL` | `BAAI/bge-base-en-v1.5` | Sentence-transformers model |
-| `EMBED_THREADS` | `nproc` | CPU threads (when using CPU) |
-
 GPU auto-detection priority: CUDA (NVIDIA) > ROCm (AMD via HIP) > XPU (Intel) > CPU.
+
+## Project structure
+
+```
+ragstuffer/
+  common.py           — shared constants, text extraction, chunking, HTML parsing
+  docstore.py         — Postgres/SQLite backends + LRU-cached docstore wrapper
+  ragstuffer.py       — main poll loop, admin server, graceful shutdown
+  ingest-remote.py    — one-shot GPU ingestion (sentence-transformers)
+  setup.sh            — interactive setup wizard (SA key, folder ID, quadlet)
+  deploy-remote.sh    — deploy ingest-remote.py to a GPU host via ssh
+  quadlets/           — Podman quadlet for systemd integration
+  Containerfile       — UBI10 CPU-only image
+  Containerfile.rocm  — AMD ROCm GPU image
+  Containerfile.cuda  — NVIDIA CUDA GPU image
+```
 
 ## Running tests
 
 ```bash
 pip install -r requirements.txt
-python -m pytest test_ragstuffer.py -v
+python -m pytest -v    # 63 tests
 ```
 
 ## License

@@ -18,6 +18,15 @@ import uuid
 from datetime import UTC
 from pathlib import Path
 
+from common import (
+    ALL_EXTENSIONS,
+    EXPORT_MAP,
+    GDRIVE_SCOPES,
+    chunk_text,
+    extract_html_text,
+    extract_text,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -34,12 +43,6 @@ STATE_PATH = Path(
     )
 )
 
-SUPPORTED_TEXT_EXTENSIONS = {".md", ".txt", ".adoc", ".rst"}
-# HTML is text but needs tag stripping — handled separately in extract_text()
-SUPPORTED_HTML_EXTENSIONS = {".html", ".htm"}
-SUPPORTED_BINARY_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx"}
-ALL_EXTENSIONS = SUPPORTED_TEXT_EXTENSIONS | SUPPORTED_HTML_EXTENSIONS | SUPPORTED_BINARY_EXTENSIONS
-
 
 def load_state() -> dict:
     if STATE_PATH.exists():
@@ -52,136 +55,7 @@ def save_state(state: dict) -> None:
     STATE_PATH.write_text(json.dumps(state, indent=2))
 
 
-# ── Text extraction ──────────────────────────────────────────────────────────
-
-
-def extract_text(file_path: Path) -> str:
-    """Extract text from a file based on its extension. Logs warnings on failure."""
-    ext = file_path.suffix.lower()
-
-    if ext in SUPPORTED_TEXT_EXTENSIONS:
-        return file_path.read_text(errors="replace")
-
-    if ext in SUPPORTED_HTML_EXTENSIONS:
-        from html.parser import HTMLParser
-
-        class _HTMLTextExtractor(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.parts: list[str] = []
-                self._skip = False
-
-            def handle_starttag(self, tag, attrs):
-                self._skip = tag in ("script", "style", "nav", "header", "footer")
-
-            def handle_endtag(self, tag):
-                if tag in ("script", "style", "nav", "header", "footer"):
-                    self._skip = False
-
-            def handle_data(self, data):
-                if not self._skip:
-                    t = data.strip()
-                    if t:
-                        self.parts.append(t)
-
-        try:
-            raw = file_path.read_text(errors="replace")
-            parser = _HTMLTextExtractor()
-            parser.feed(raw)
-            return "\n".join(parser.parts)
-        except Exception:
-            log.warning("Failed to extract text from HTML: %s", file_path.name)
-            return ""
-
-    if ext == ".pdf":
-        try:
-            import pypdf
-
-            reader = pypdf.PdfReader(str(file_path))
-            return "\n\n".join(page.extract_text() or "" for page in reader.pages)
-        except Exception:
-            log.warning("Failed to extract text from PDF: %s", file_path.name)
-            return ""
-
-    if ext == ".docx":
-        try:
-            import docx
-
-            doc = docx.Document(str(file_path))
-            return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
-        except Exception:
-            log.warning("Failed to extract text from DOCX: %s", file_path.name)
-            return ""
-
-    if ext == ".pptx":
-        try:
-            from pptx import Presentation
-
-            prs = Presentation(str(file_path))
-            texts = []
-            for slide in prs.slides:
-                for shape in slide.shapes:
-                    if shape.has_text_frame:
-                        texts.append(shape.text_frame.text)
-            return "\n\n".join(texts)
-        except Exception:
-            log.warning("Failed to extract text from PPTX: %s", file_path.name)
-            return ""
-
-    if ext == ".xlsx":
-        try:
-            import openpyxl
-
-            wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
-            texts = []
-            for ws in wb.worksheets:
-                for row in ws.iter_rows(values_only=True):
-                    vals = [str(c) for c in row if c is not None]
-                    if vals:
-                        texts.append(" | ".join(vals))
-            return "\n".join(texts)
-        except Exception:
-            log.warning("Failed to extract text from XLSX: %s", file_path.name)
-            return ""
-
-    return ""
-
-
-# ── Chunking (adapted from vector-embedder's RecursiveCharacterTextSplitter pattern) ─
-
-
-def chunk_text(text: str, chunk_size: int = 1024, overlap: int = 128) -> list[str]:
-    """Split text into overlapping chunks using paragraph/sentence boundaries.
-
-    Tries to split on paragraph breaks first, then sentences, then words,
-    falling back to character-level splits. Adapted from the chunking strategy
-    in validatedpatterns-sandbox/vector-embedder.
-    """
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=overlap,
-        separators=["\n\n", "\n", ". ", " ", ""],
-    )
-    return [chunk for chunk in splitter.split_text(text) if chunk.strip()]
-
-
 # ── Google Drive source ──────────────────────────────────────────────────────
-
-GDRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
-
-EXPORT_MAP = {
-    "application/vnd.google-apps.document": ("application/pdf", ".pdf"),
-    "application/vnd.google-apps.spreadsheet": (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ".xlsx",
-    ),
-    "application/vnd.google-apps.presentation": (
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ".pptx",
-    ),
-}
 
 
 def get_drive_service():
@@ -222,7 +96,8 @@ def list_drive_files(service, folder_id: str) -> list[dict]:
     return results
 
 
-def download_drive_file(service, file_info: dict, staging_dir: Path) -> bool:
+def download_drive_file(service, file_info: dict, staging_dir: Path) -> Path | None:
+    """Download a Drive file to staging_dir. Returns the dest Path on success, None on skip."""
     from googleapiclient.http import MediaIoBaseDownload
 
     file_id = file_info["id"]
@@ -238,7 +113,7 @@ def download_drive_file(service, file_info: dict, staging_dir: Path) -> bool:
         ext = Path(name).suffix.lower()
         if ext not in ALL_EXTENSIONS:
             log.debug("Skipping unsupported file: %s", name)
-            return False
+            return None
         dest = staging_dir / name
         log.info("Downloading %s", name)
         request = service.files().get_media(fileId=file_id)
@@ -248,7 +123,7 @@ def download_drive_file(service, file_info: dict, staging_dir: Path) -> bool:
         done = False
         while not done:
             _, done = downloader.next_chunk()
-    return True
+    return dest
 
 
 def load_drive_docs(staging_dir: Path) -> list[dict]:
@@ -274,17 +149,20 @@ def load_drive_docs(staging_dir: Path) -> list[dict]:
     current_ids = {f["id"] for f in files}
     new_state = {fid: mtime for fid, mtime in state.items() if fid in current_ids}
 
+    downloaded: list[Path] = []
     for f in changed:
         try:
-            if download_drive_file(service, f, staging_dir):
+            dest = download_drive_file(service, f, staging_dir)
+            if dest is not None:
                 new_state[f["id"]] = f["modifiedTime"]
+                downloaded.append(dest)
         except Exception:
             log.warning("Drive: failed to download %s — skipping", f["name"])
 
     save_state(new_state)
 
     docs = []
-    for f in staging_dir.iterdir():
+    for f in downloaded:
         if not f.is_file():
             continue
         text = extract_text(f)
@@ -292,7 +170,6 @@ def load_drive_docs(staging_dir: Path) -> list[dict]:
             docs.append({"text": text, "source": f"gdrive://{f.name}"})
         else:
             log.warning("Drive: no text extracted from %s", f.name)
-        # Clean up staging file after extraction
         f.unlink(missing_ok=True)
     return docs
 
@@ -390,28 +267,7 @@ def load_web_docs() -> list[dict]:
         log.error("WEB_SOURCES is not valid JSON")
         return []
 
-    from html.parser import HTMLParser
-
     import requests
-
-    class TextExtractor(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.parts = []
-            self._skip = False
-
-        def handle_starttag(self, tag, attrs):
-            self._skip = tag in ("script", "style", "nav", "header", "footer")
-
-        def handle_endtag(self, tag):
-            if tag in ("script", "style", "nav", "header", "footer"):
-                self._skip = False
-
-        def handle_data(self, data):
-            if not self._skip:
-                text = data.strip()
-                if text:
-                    self.parts.append(text)
 
     docs = []
     for url in urls:
@@ -421,9 +277,7 @@ def load_web_docs() -> list[dict]:
             resp.raise_for_status()
 
             if "html" in resp.headers.get("content-type", "").lower():
-                parser = TextExtractor()
-                parser.feed(resp.text)
-                text = "\n\n".join(parser.parts)
+                text = extract_html_text(resp.text)
             else:
                 text = resp.text
 
@@ -678,7 +532,7 @@ def _start_admin_server(trigger_event, admin_port, admin_token):
                 self.send_response(404)
                 self.end_headers()
 
-        def log_message(self, format, *args):
+        def log_message(self, fmt, *args):
             """Suppress default access logging — we log triggers explicitly."""
 
     server = HTTPServer(("0.0.0.0", admin_port), AdminHandler)
@@ -689,6 +543,7 @@ def _start_admin_server(trigger_event, admin_port, admin_token):
 
 
 def main() -> None:
+    import signal
     import threading
 
     interval = int(os.environ.get("WATCH_INTERVAL_MINUTES", "15"))
@@ -702,6 +557,17 @@ def main() -> None:
 
     # Event for admin-triggered immediate ingestion
     trigger = threading.Event()
+    # Event for graceful shutdown
+    shutdown = threading.Event()
+
+    def _handle_shutdown(signum, frame):
+        sig_name = signal.Signals(signum).name
+        log.info("Received %s — shutting down gracefully", sig_name)
+        shutdown.set()
+        trigger.set()  # unblock the wait
+
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
 
     log.info("Starting ragstuffer")
     log.info("  Qdrant:     %s", os.environ.get("QDRANT_URL", "http://127.0.0.1:6333"))
@@ -715,9 +581,9 @@ def main() -> None:
     if os.environ.get("WEB_SOURCES"):
         log.info("  Web:        %s", os.environ["WEB_SOURCES"])
 
-    _start_admin_server(trigger, admin_port, admin_token)
+    server = _start_admin_server(trigger, admin_port, admin_token)
 
-    while True:
+    while not shutdown.is_set():
         try:
             poll_once(staging_dir, repos_dir)
         except Exception:
@@ -725,6 +591,9 @@ def main() -> None:
         # Wait for interval OR admin trigger, whichever comes first
         trigger.wait(timeout=interval * 60)
         trigger.clear()
+
+    server.shutdown()
+    log.info("Shutdown complete")
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ fi
 
 echo "=== Installing dependencies ==="
 ssh "$REMOTE" "cd $REMOTE_DIR && \
-    python3 -m venv --system-site-packages venv && \
+    python3 -m venv venv && \
     source venv/bin/activate && \
     pip install -q \
         sentence-transformers \
@@ -57,5 +57,4 @@ ssh "$REMOTE" "cd $REMOTE_DIR && \
     GDRIVE_FOLDER_ID=${GDRIVE_FOLDER_ID:?Set GDRIVE_FOLDER_ID before running} \
     REPO_SOURCES='${REPO_SOURCES:-}' \
     WEB_SOURCES='${WEB_SOURCES:-}' \
-    EMBED_THREADS=\$(nproc) \
     python3 ingest-remote.py"

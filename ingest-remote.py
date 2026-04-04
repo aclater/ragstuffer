@@ -25,6 +25,15 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from common import (
+    ALL_EXTENSIONS,
+    EXPORT_MAP,
+    GDRIVE_SCOPES,
+    chunk_text,
+    extract_html_text,
+    extract_text,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -39,7 +48,7 @@ QDRANT_URL = os.environ.get("QDRANT_URL", f"http://{TARGET_HOST_IP}:6333")
 DOCSTORE_URL = os.environ.get("DOCSTORE_URL", f"postgresql://litellm:litellm@{TARGET_HOST_IP}:5432/litellm")
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "documents")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "BAAI/bge-base-en-v1.5")
-EMBED_THREADS = int(os.environ.get("EMBED_THREADS", os.cpu_count() or 4))
+# CHUNK_SIZE/CHUNK_OVERLAP are passed to common.chunk_text()
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "1024"))
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "128"))
 
@@ -52,132 +61,6 @@ REPO_SOURCES = os.environ.get("REPO_SOURCES", "")
 
 # Web URLs: JSON list of URLs
 WEB_SOURCES = os.environ.get("WEB_SOURCES", "")
-
-SUPPORTED_TEXT_EXTENSIONS = {".md", ".txt", ".adoc", ".rst"}
-SUPPORTED_HTML_EXTENSIONS = {".html", ".htm"}
-SUPPORTED_BINARY_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx"}
-ALL_EXTENSIONS = SUPPORTED_TEXT_EXTENSIONS | SUPPORTED_HTML_EXTENSIONS | SUPPORTED_BINARY_EXTENSIONS
-
-GDRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
-EXPORT_MAP = {
-    "application/vnd.google-apps.document": ("application/pdf", ".pdf"),
-    "application/vnd.google-apps.spreadsheet": (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ".xlsx",
-    ),
-    "application/vnd.google-apps.presentation": (
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ".pptx",
-    ),
-}
-
-
-# ── Text extraction (same as ragstuffer.py) ────────────────────────────────
-
-
-def extract_text(file_path: Path) -> str:
-    ext = file_path.suffix.lower()
-
-    if ext in SUPPORTED_TEXT_EXTENSIONS:
-        return file_path.read_text(errors="replace")
-
-    if ext in SUPPORTED_HTML_EXTENSIONS:
-        from html.parser import HTMLParser
-
-        class _HTMLTextExtractor(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.parts: list[str] = []
-                self._skip = False
-
-            def handle_starttag(self, tag, attrs):
-                self._skip = tag in ("script", "style", "nav", "header", "footer")
-
-            def handle_endtag(self, tag):
-                if tag in ("script", "style", "nav", "header", "footer"):
-                    self._skip = False
-
-            def handle_data(self, data):
-                if not self._skip:
-                    t = data.strip()
-                    if t:
-                        self.parts.append(t)
-
-        try:
-            raw = file_path.read_text(errors="replace")
-            parser = _HTMLTextExtractor()
-            parser.feed(raw)
-            return "\n".join(parser.parts)
-        except Exception:
-            log.warning("Failed to extract text from HTML: %s", file_path.name)
-            return ""
-
-    if ext == ".pdf":
-        try:
-            import pypdf
-
-            reader = pypdf.PdfReader(str(file_path))
-            return "\n\n".join(page.extract_text() or "" for page in reader.pages)
-        except Exception:
-            log.warning("Failed to extract text from PDF: %s", file_path.name)
-            return ""
-
-    if ext == ".docx":
-        try:
-            import docx
-
-            doc = docx.Document(str(file_path))
-            return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
-        except Exception:
-            log.warning("Failed to extract text from DOCX: %s", file_path.name)
-            return ""
-
-    if ext == ".pptx":
-        try:
-            from pptx import Presentation
-
-            prs = Presentation(str(file_path))
-            texts = []
-            for slide in prs.slides:
-                for shape in slide.shapes:
-                    if shape.has_text_frame:
-                        texts.append(shape.text_frame.text)
-            return "\n\n".join(texts)
-        except Exception:
-            log.warning("Failed to extract text from PPTX: %s", file_path.name)
-            return ""
-
-    if ext == ".xlsx":
-        try:
-            import openpyxl
-
-            wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
-            texts = []
-            for ws in wb.worksheets:
-                for row in ws.iter_rows(values_only=True):
-                    vals = [str(c) for c in row if c is not None]
-                    if vals:
-                        texts.append(" | ".join(vals))
-            return "\n".join(texts)
-        except Exception:
-            log.warning("Failed to extract text from XLSX: %s", file_path.name)
-            return ""
-
-    return ""
-
-
-# ── Chunking ─────────────────────────────────────────────────────────────────
-
-
-def chunk_text(text: str) -> list[str]:
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
-        separators=["\n\n", "\n", ". ", " ", ""],
-    )
-    return [chunk for chunk in splitter.split_text(text) if chunk.strip()]
 
 
 # ── Google Drive ─────────────────────────────────────────────────────────────
@@ -223,6 +106,7 @@ def load_drive_docs(staging_dir: Path) -> list[dict]:
 
     log.info("Drive: found %d files", len(files))
 
+    downloaded: list[Path] = []
     for f in files:
         file_id = f["id"]
         name = f["name"]
@@ -246,9 +130,10 @@ def load_drive_docs(staging_dir: Path) -> list[dict]:
             done = False
             while not done:
                 _, done = downloader.next_chunk()
+        downloaded.append(dest)
 
     docs = []
-    for f in staging_dir.iterdir():
+    for f in downloaded:
         if not f.is_file():
             continue
         text = extract_text(f)
@@ -342,28 +227,7 @@ def load_web_docs() -> list[dict]:
         log.error("WEB_SOURCES is not valid JSON")
         return []
 
-    from html.parser import HTMLParser
-
     import requests
-
-    class TextExtractor(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.parts = []
-            self._skip = False
-
-        def handle_starttag(self, tag, attrs):
-            self._skip = tag in ("script", "style", "nav", "header", "footer")
-
-        def handle_endtag(self, tag):
-            if tag in ("script", "style", "nav", "header", "footer"):
-                self._skip = False
-
-        def handle_data(self, data):
-            if not self._skip:
-                text = data.strip()
-                if text:
-                    self.parts.append(text)
 
     docs = []
     for url in urls:
@@ -372,15 +236,15 @@ def load_web_docs() -> list[dict]:
             resp = requests.get(url, timeout=30, headers={"User-Agent": "ragstuffer/1.0"})
             resp.raise_for_status()
             if "html" in resp.headers.get("content-type", "").lower():
-                parser = TextExtractor()
-                parser.feed(resp.text)
-                text = "\n\n".join(parser.parts)
+                text = extract_html_text(resp.text)
             else:
                 text = resp.text
             if text.strip():
                 docs.append({"text": text, "source": url})
+            else:
+                log.warning("Web: no text extracted from %s", url)
         except Exception:
-            log.warning("Web: failed to fetch %s", url)
+            log.warning("Web: failed to fetch %s — skipping", url)
 
     log.info("Web: loaded %d documents from %d URLs", len(docs), len(urls))
     return docs
@@ -472,7 +336,7 @@ def ingest(docs: list[dict]) -> None:
     all_chunks = []
     for doc in docs:
         doc_id = str(uuid.uuid5(uuid.NAMESPACE_URL, doc["source"]))
-        chunks = chunk_text(doc["text"])
+        chunks = chunk_text(doc["text"], chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
         for i, chunk in enumerate(chunks):
             all_chunks.append(
                 {
@@ -581,7 +445,6 @@ def main() -> None:
     log.info("  Postgres:   %s@%s", "litellm", TARGET_HOST_IP)
     log.info("  Collection: %s", QDRANT_COLLECTION)
     log.info("  Model:      %s", EMBED_MODEL)
-    log.info("  Threads:    %d", EMBED_THREADS)
 
     all_docs = []
     all_docs.extend(load_drive_docs(staging_dir))

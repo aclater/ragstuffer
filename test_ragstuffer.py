@@ -1,8 +1,13 @@
 """Tests for ragstuffer — covers text extraction, point ID determinism,
-and state management."""
+state management, admin server endpoints, and graceful shutdown."""
 
 import importlib.util
+import json
+import signal
 import sys
+import threading
+import time
+import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -117,3 +122,119 @@ class TestState:
             loaded = rw.load_state()
             assert "a" not in loaded
             assert loaded == {"b": "2"}
+
+
+# ── Admin server ───────────────────────────────────────────────────────────
+
+
+def _find_free_port():
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+class TestAdminServer:
+    """Tests for the admin HTTP server endpoints."""
+
+    def setup_method(self):
+        self.port = _find_free_port()
+        self.trigger = threading.Event()
+        self.server = rw._start_admin_server(self.trigger, self.port, "test-token")
+
+    def teardown_method(self):
+        self.server.shutdown()
+
+    def _request(self, method, path, token=None):
+        url = f"http://127.0.0.1:{self.port}{path}"
+        req = urllib.request.Request(url, method=method)
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        if method == "POST":
+            req.data = b""
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            body = e.read()
+            return e.code, json.loads(body) if body else {}
+
+    def test_health_endpoint(self):
+        status, body = self._request("GET", "/health")
+        assert status == 200
+        assert body["status"] == "ok"
+
+    def test_health_no_auth_needed(self):
+        # /health should work without a token
+        status, _ = self._request("GET", "/health")
+        assert status == 200
+
+    def test_ingest_now_requires_auth(self):
+        status, body = self._request("POST", "/admin/ingest-now")
+        assert status == 401
+
+    def test_ingest_now_with_auth(self):
+        status, body = self._request("POST", "/admin/ingest-now", token="test-token")
+        assert status == 200
+        assert body["mode"] == "incremental"
+        assert self.trigger.is_set()
+
+    def test_ingest_full_with_auth(self, tmp_path):
+        state_file = tmp_path / "state.json"
+        state_file.write_text("{}")
+        with patch.object(rw, "STATE_PATH", state_file):
+            status, body = self._request("POST", "/admin/ingest-full", token="test-token")
+        assert status == 200
+        assert body["mode"] == "full"
+        assert self.trigger.is_set()
+
+    def test_wrong_token_rejected(self):
+        status, _ = self._request("POST", "/admin/ingest-now", token="wrong")
+        assert status == 401
+
+    def test_unknown_path_404(self):
+        status, _ = self._request("GET", "/nonexistent")
+        assert status == 404
+
+    def test_unknown_post_404(self):
+        status, _ = self._request("POST", "/admin/unknown", token="test-token")
+        assert status == 404
+
+
+class TestAdminServerNoAuth:
+    """Admin server with no token set — all endpoints open."""
+
+    def setup_method(self):
+        self.port = _find_free_port()
+        self.trigger = threading.Event()
+        self.server = rw._start_admin_server(self.trigger, self.port, "")
+
+    def teardown_method(self):
+        self.server.shutdown()
+
+    def _request(self, method, path):
+        url = f"http://127.0.0.1:{self.port}{path}"
+        req = urllib.request.Request(url, method=method)
+        if method == "POST":
+            req.data = b""
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read())
+
+    def test_ingest_now_no_auth_needed(self):
+        status, body = self._request("POST", "/admin/ingest-now")
+        assert status == 200
+        assert body["status"] == "triggered"
+
+
+# ── download_drive_file return type ──────────────────────────────────────────
+
+
+class TestDownloadDriveFile:
+    """Verify download_drive_file returns Path on success, None on skip."""
+
+    def test_unsupported_extension_returns_none(self):
+        mock_service = MagicMock()
+        file_info = {"id": "123", "name": "data.xyz", "mimeType": "application/octet-stream"}
+        result = rw.download_drive_file(mock_service, file_info, Path("/tmp"))
+        assert result is None

@@ -9,7 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$SCRIPT_DIR"
 QUADLET_DIR="$HOME/.config/containers/systemd"
 CONFIG_DIR="$HOME/.config/llm-stack"
 SA_DIR="$HOME/.config/ramalama"

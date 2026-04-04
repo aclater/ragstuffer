@@ -1,0 +1,44 @@
+[project]
+name = "ragstuffer"
+version = "0.1.0"
+description = "Ingest documents from Google Drive, git repos, and web URLs into Qdrant"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "google-api-python-client",
+    "google-auth-httplib2",
+    "google-auth-oauthlib",
+    "qdrant-client",
+    "langchain-text-splitters",
+    "requests",
+    "pypdf",
+    "python-docx",
+    "python-pptx",
+    "openpyxl",
+    "psycopg2-binary",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+gpu = [
+    "sentence-transformers",
+    "torch",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
