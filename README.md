@@ -23,14 +23,15 @@ Three Containerfile variants — build selects automatically based on GPU:
 | `Containerfile.cuda` | pytorch/pytorch (NVIDIA) | CUDA | GPU embedding on NVIDIA GPUs |
 
 ```bash
+# Tag convention: localhost/ragstuffer:main (or :$(git rev-parse --short HEAD))
 # CPU-only (default — Red Hat UBI10)
-podman build -t ragstuffer .
+podman build -t localhost/ragstuffer:main .
 
 # AMD ROCm GPU
-podman build -t ragstuffer:rocm -f Containerfile.rocm .
+podman build -t localhost/ragstuffer:rocm -f Containerfile.rocm .
 
 # NVIDIA CUDA GPU
-podman build -t ragstuffer:cuda -f Containerfile.cuda .
+podman build -t localhost/ragstuffer:cuda -f Containerfile.cuda .
 ```
 
 Or let `llm-stack.sh build` auto-select based on detected GPU.

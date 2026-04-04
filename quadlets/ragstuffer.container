@@ -3,7 +3,10 @@ Description=ragstuffer — ingest documents into Qdrant from Drive/Git/Web
 After=network-online.target
 
 [Container]
-Image=localhost/ragstuffer:latest
+# Locally built — tag with git SHA at build time:
+#   podman build -t localhost/ragstuffer:$(git rev-parse --short HEAD) .
+#   podman tag localhost/ragstuffer:$(git rev-parse --short HEAD) localhost/ragstuffer:main
+Image=localhost/ragstuffer:main
 ContainerName=ragstuffer
 
 # Mount app code for dev workflow (matches Containerfile WORKDIR /app)
@@ -31,6 +34,13 @@ User=1000
 
 # Networking — needs access to Qdrant and ragpipe on the host
 Network=host
+
+# Health check — ragstuffer admin API
+HealthCmd=curl -sf http://127.0.0.1:8091/health
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=60s
 
 [Service]
 Restart=on-failure
