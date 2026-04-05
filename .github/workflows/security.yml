@@ -41,7 +41,7 @@ jobs:
         run: docker build -t ragstuffer:${{ matrix.variant }} -f ${{ matrix.file }} .
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ragstuffer:${{ matrix.variant }}
           format: sarif
