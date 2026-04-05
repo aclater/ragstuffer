@@ -415,9 +415,44 @@ def _get_docstore():
     return create_docstore()
 
 
+def _get_existing_doc_ids(qdrant, collection_name: str) -> set[str]:
+    """Return the set of doc_ids that already have vectors in Qdrant."""
+    from qdrant_client.models import Filter, FieldCondition, MatchValue, ScrollRequest
+
+    try:
+        collections = [c.name for c in qdrant.get_collections().collections]
+        if collection_name not in collections:
+            return set()
+
+        doc_ids: set[str] = set()
+        offset = None
+        while True:
+            results = qdrant.scroll(
+                collection_name=collection_name,
+                scroll_filter=None,
+                limit=1000,
+                offset=offset,
+                with_payload=["doc_id"],
+                with_vectors=False,
+            )
+            points, next_offset = results
+            for point in points:
+                doc_ids.add(point.payload["doc_id"])
+            if next_offset is None:
+                break
+            offset = next_offset
+
+        return doc_ids
+    except Exception:
+        log.warning("Failed to query Qdrant for existing doc_ids — will re-embed all")
+        return set()
+
+
 def ingest_docs(docs: list[dict]) -> bool:
     """Chunk documents, persist to docstore, embed, and upsert references to Qdrant.
 
+    Skips embedding for documents that already have vectors in Qdrant
+    (checked by doc_id). Postgres upsert always runs (cheap, idempotent).
     Qdrant payloads contain only {doc_id, chunk_id, source, title, created_at}.
     Full chunk text lives in the document store.
     """
@@ -457,7 +492,7 @@ def ingest_docs(docs: list[dict]) -> bool:
         log.warning("No text chunks to ingest")
         return True
 
-    # Step 1: Persist to docstore (must succeed before Qdrant upsert)
+    # Step 1: Persist to docstore (always — cheap upsert, handles text updates)
     docstore = _get_docstore()
     docstore.upsert_chunks(all_chunks)
     log.info("Persisted %d chunks to docstore", len(all_chunks))
@@ -465,16 +500,30 @@ def ingest_docs(docs: list[dict]) -> bool:
     # Step 1b: Register collection in Postgres (non-fatal if table missing)
     _register_collection(collection_name, source_types)
 
-    # Step 2: Embed chunk texts via ragpipe (no local model needed)
+    # Step 2: Check which documents already have vectors in Qdrant
+    qdrant = get_qdrant_client()
+    existing_doc_ids = _get_existing_doc_ids(qdrant, collection_name)
+
+    new_chunks = [c for c in all_chunks if c["doc_id"] not in existing_doc_ids]
+    skipped = len(all_chunks) - len(new_chunks)
+    if skipped:
+        log.info(
+            "Skipping %d chunks (%d docs) already in Qdrant",
+            skipped,
+            len({c["doc_id"] for c in all_chunks} - {c["doc_id"] for c in new_chunks}),
+        )
+
+    if not new_chunks:
+        log.info("All %d chunks already in Qdrant — nothing to embed", len(all_chunks))
+        return True
+
+    # Step 3: Embed only new chunk texts via ragpipe
     embed_batch_size = int(os.environ.get("EMBED_BATCH_SIZE", "64"))
-    log.info("Embedding %d chunks via ragpipe (batch_size=%d)...", len(all_chunks), embed_batch_size)
-    texts = [c["text"] for c in all_chunks]
+    log.info("Embedding %d new chunks via ragpipe (batch_size=%d)...", len(new_chunks), embed_batch_size)
+    texts = [c["text"] for c in new_chunks]
     vectors = embed_texts(texts, batch_size=embed_batch_size)
 
-    # Step 3: Upsert reference-only payloads to Qdrant
-    qdrant = get_qdrant_client()
-
-    # Ensure collection exists (idempotent — creates only if missing)
+    # Step 4: Upsert reference-only payloads to Qdrant
     ensure_collection(qdrant, collection_name, len(vectors[0]))
 
     now = datetime.now(UTC).isoformat()
@@ -490,7 +539,7 @@ def ingest_docs(docs: list[dict]) -> bool:
                 "created_at": now,
             },
         )
-        for vec, chunk in zip(vectors, all_chunks, strict=True)
+        for vec, chunk in zip(vectors, new_chunks, strict=True)
     ]
 
     batch_size = 100
