@@ -437,7 +437,8 @@ def _get_existing_doc_ids(qdrant, collection_name: str) -> set[str]:
             )
             points, next_offset = results
             for point in points:
-                doc_ids.add(point.payload["doc_id"])
+                if doc_id := point.payload.get("doc_id"):
+                    doc_ids.add(doc_id)
             if next_offset is None:
                 break
             offset = next_offset
