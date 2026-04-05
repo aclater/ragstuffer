@@ -45,9 +45,6 @@ jobs:
           - variant: cpu
             file: Containerfile
             suffix: ""
-          # ROCm and CUDA variants are built but not pushed in CI —
-          # they require GPU hardware for full testing. Built locally
-          # on hardware with GPU access.
           - variant: rocm
             file: Containerfile.rocm
             suffix: "-rocm"
