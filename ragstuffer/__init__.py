@@ -17,15 +17,21 @@ import uuid
 from datetime import UTC
 from pathlib import Path
 
-from common import (
+_repo_root = Path(__file__).resolve().parent.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
+from common import (  # noqa: E402,F401
     ALL_EXTENSIONS,
     EXPORT_MAP,
     GDRIVE_SCOPES,
     _extract_html_title,
     chunk_text,
     extract_html_text,
+    extract_text,
     extract_text_with_title,
 )
+from ragstuffer.metrics import get_metrics  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -345,6 +351,8 @@ def embed_texts(texts: list[str], batch_size: int = 64) -> list[list[float]]:
 
     import requests
 
+    from ragstuffer.metrics import ragstuffer_embed_errors_total, ragstuffer_embed_requests_total
+
     embed_url = os.environ.get("EMBED_URL", "http://127.0.0.1:8090/v1/embeddings")
 
     _wait_for_embed_service(embed_url)
@@ -352,11 +360,16 @@ def embed_texts(texts: list[str], batch_size: int = 64) -> list[list[float]]:
     session = requests.Session()
 
     def _embed_batch(batch_idx: int, batch: list[str]) -> tuple[int, list[list[float]]]:
-        resp = session.post(embed_url, json={"input": batch}, timeout=120)
-        resp.raise_for_status()
-        data = resp.json()["data"]
-        data.sort(key=lambda x: x["index"])
-        return batch_idx, [d["embedding"] for d in data]
+        ragstuffer_embed_requests_total.inc()
+        try:
+            resp = session.post(embed_url, json={"input": batch}, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()["data"]
+            data.sort(key=lambda x: x["index"])
+            return batch_idx, [d["embedding"] for d in data]
+        except Exception:
+            ragstuffer_embed_errors_total.inc()
+            raise
 
     batches = [(i, texts[i : i + batch_size]) for i in range(0, len(texts), batch_size)]
     results: list[list[list[float]] | None] = [None] * len(batches)
@@ -453,9 +466,18 @@ def ingest_docs(docs: list[dict]) -> bool:
     Qdrant payloads contain only {doc_id, chunk_id, source, title, created_at}.
     Full chunk text lives in the document store.
     """
+    import time
     from datetime import datetime
 
     from qdrant_client.models import PointStruct
+
+    from ragstuffer.metrics import (
+        ragstuffer_chunks_created_total,
+        ragstuffer_documents_ingested_total,
+        ragstuffer_documents_skipped_total,
+        ragstuffer_ingest_duration_seconds,
+        ragstuffer_last_ingest_timestamp,
+    )
 
     if not docs:
         log.info("No documents to ingest")
@@ -465,7 +487,6 @@ def ingest_docs(docs: list[dict]) -> bool:
     chunk_size = int(os.environ.get("CHUNK_SIZE", "1024"))
     chunk_overlap = int(os.environ.get("CHUNK_OVERLAP", "128"))
 
-    # Chunk all documents and assign stable doc_id per source
     all_chunks = []
     source_types: set[str] = set()
     for doc in docs:
@@ -482,22 +503,20 @@ def ingest_docs(docs: list[dict]) -> bool:
                     "title": title,
                 }
             )
-        source_types.add(_classify_source_type(doc["source"]))
+        st = _classify_source_type(doc["source"])
+        source_types.add(st)
         log.info("Chunked %s → %d chunks (doc_id=%s)", doc["source"], len(chunks), doc_id)
 
     if not all_chunks:
         log.warning("No text chunks to ingest")
         return True
 
-    # Step 1: Persist to docstore (always — cheap upsert, handles text updates)
     docstore = _get_docstore()
     docstore.upsert_chunks(all_chunks)
     log.info("Persisted %d chunks to docstore", len(all_chunks))
 
-    # Step 1b: Register collection in Postgres (non-fatal if table missing)
     _register_collection(collection_name, source_types)
 
-    # Step 2: Check which documents already have vectors in Qdrant
     qdrant = get_qdrant_client()
     existing_doc_ids = _get_existing_doc_ids(qdrant, collection_name)
 
@@ -509,18 +528,19 @@ def ingest_docs(docs: list[dict]) -> bool:
             skipped,
             len({c["doc_id"] for c in all_chunks} - {c["doc_id"] for c in new_chunks}),
         )
+        ragstuffer_documents_skipped_total.labels(reason="already_indexed").inc(skipped)
 
     if not new_chunks:
         log.info("All %d chunks already in Qdrant — nothing to embed", len(all_chunks))
         return True
 
-    # Step 3: Embed only new chunk texts via ragpipe
+    start_time = time.monotonic()
+
     embed_batch_size = int(os.environ.get("EMBED_BATCH_SIZE", "64"))
     log.info("Embedding %d new chunks via ragpipe (batch_size=%d)...", len(new_chunks), embed_batch_size)
     texts = [c["text"] for c in new_chunks]
     vectors = embed_texts(texts, batch_size=embed_batch_size)
 
-    # Step 4: Upsert reference-only payloads to Qdrant
     ensure_collection(qdrant, collection_name, len(vectors[0]))
 
     now = datetime.now(UTC).isoformat()
@@ -542,6 +562,13 @@ def ingest_docs(docs: list[dict]) -> bool:
     batch_size = 100
     for i in range(0, len(points), batch_size):
         qdrant.upsert(collection_name=collection_name, points=points[i : i + batch_size])
+
+    duration = time.monotonic() - start_time
+    primary_source = next(iter(source_types), "unknown")
+    ragstuffer_ingest_duration_seconds.labels(source_type=primary_source).observe(duration)
+    ragstuffer_documents_ingested_total.labels(source_type=primary_source, collection=collection_name).inc(len(docs))
+    ragstuffer_chunks_created_total.labels(collection=collection_name).inc(len(new_chunks))
+    ragstuffer_last_ingest_timestamp.labels(collection=collection_name).set(time.time())
 
     log.info("Ingested %d reference points into Qdrant collection '%s'", len(points), collection_name)
     return True
@@ -667,6 +694,11 @@ def _start_admin_server(trigger_event, admin_port, admin_token):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(b'{"status":"ok"}')
+            elif self.path == "/metrics":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(get_metrics())
             else:
                 self.send_response(404)
                 self.end_headers()

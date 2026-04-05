@@ -32,7 +32,7 @@ for _mod in ["qdrant_client", "qdrant_client.models"]:
 
 spec = importlib.util.spec_from_file_location(
     "ragstuffer",
-    Path(__file__).with_name("ragstuffer.py"),
+    Path(__file__).parent / "ragstuffer" / "__init__.py",
 )
 rw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rw)

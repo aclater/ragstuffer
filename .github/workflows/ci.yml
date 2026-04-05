@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: pip install --quiet -r requirements.txt pytest pytest-cov hypothesis
+        run: pip install --quiet -r requirements.txt pytest pytest-cov hypothesis prometheus-client
       - name: Run tests with coverage
         run: python -m pytest --cov=. --cov-report=xml --cov-report=term-missing -v
       - uses: codecov/codecov-action@v6.0.0
