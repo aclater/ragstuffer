@@ -326,7 +326,7 @@ def _wait_for_embed_service(embed_url: str, timeout: int = 300) -> None:
                 if attempt > 0:
                     log.info("Embedding service ready after %d attempts", attempt)
                 return
-        except requests.ConnectionError:
+        except (requests.ConnectionError, requests.Timeout):
             pass
         attempt += 1
         backoff = min(10, 2 ** min(attempt, 5))
