@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir \
     sentence-transformers
 
 WORKDIR /app
-COPY ragstuffer.py ingest-remote.py docstore.py /app/
+COPY ragstuffer/ /app/ragstuffer/
+COPY ingest-remote.py docstore.py /app/
 
-CMD ["python3", "/app/ragstuffer.py"]
+CMD ["python3", "-m", "ragstuffer"]
