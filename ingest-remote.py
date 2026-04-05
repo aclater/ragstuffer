@@ -377,16 +377,15 @@ def ingest(docs: list[dict]) -> None:
                 text       TEXT NOT NULL,
                 source     TEXT NOT NULL DEFAULT '',
                 title      TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (doc_id, chunk_id)
             )
         """)
-        now = datetime.now(UTC).isoformat()
-        values = [(c["doc_id"], c["chunk_id"], c["text"], c["source"], c.get("title", ""), now) for c in all_chunks]
+        values = [(c["doc_id"], c["chunk_id"], c["text"], c["source"], c.get("title", "")) for c in all_chunks]
         execute_values(
             cur,
             """
-            INSERT INTO chunks (doc_id, chunk_id, text, source, title, created_at)
+            INSERT INTO chunks (doc_id, chunk_id, text, source, title)
             VALUES %s
             ON CONFLICT (doc_id, chunk_id)
             DO UPDATE SET text = EXCLUDED.text, source = EXCLUDED.source, title = EXCLUDED.title

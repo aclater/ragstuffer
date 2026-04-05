@@ -14,7 +14,7 @@ Schema:
     text      TEXT    — full chunk content
     source    TEXT    — filename or URI for observability
     title     TEXT    — document title (denormalised, same for all chunks of a doc)
-    created_at TEXT   — ISO8601 timestamp
+    created_at TIMESTAMPTZ — Postgres: server-side NOW(); SQLite: ISO8601 string
     PRIMARY KEY (doc_id, chunk_id)
 """
 
@@ -89,37 +89,35 @@ class PostgresDocstore(DocstoreBackend):
                     text       TEXT NOT NULL,
                     source     TEXT NOT NULL DEFAULT '',
                     title      TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (doc_id, chunk_id)
                 )
             """)
             cur.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''")
 
     def upsert_chunk(self, doc_id: str, chunk_id: int, text: str, source: str, title: str = "") -> None:
-        now = datetime.now(UTC).isoformat()
         conn = self._get_sync_conn()
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO chunks (doc_id, chunk_id, text, source, title, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO chunks (doc_id, chunk_id, text, source, title)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (doc_id, chunk_id)
                 DO UPDATE SET text = EXCLUDED.text, source = EXCLUDED.source, title = EXCLUDED.title
             """,
-                (doc_id, chunk_id, text, source, title, now),
+                (doc_id, chunk_id, text, source, title),
             )
 
     def upsert_chunks(self, chunks: list[dict]) -> None:
-        now = datetime.now(UTC).isoformat()
         conn = self._get_sync_conn()
         with conn.cursor() as cur:
             from psycopg2.extras import execute_values
 
-            values = [(c["doc_id"], c["chunk_id"], c["text"], c["source"], c.get("title", ""), now) for c in chunks]
+            values = [(c["doc_id"], c["chunk_id"], c["text"], c["source"], c.get("title", "")) for c in chunks]
             execute_values(
                 cur,
                 """
-                INSERT INTO chunks (doc_id, chunk_id, text, source, title, created_at)
+                INSERT INTO chunks (doc_id, chunk_id, text, source, title)
                 VALUES %s
                 ON CONFLICT (doc_id, chunk_id)
                 DO UPDATE SET text = EXCLUDED.text, source = EXCLUDED.source, title = EXCLUDED.title
