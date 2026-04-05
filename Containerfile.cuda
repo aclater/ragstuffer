@@ -11,7 +11,7 @@ FROM docker.io/pytorch/pytorch:2.11.0-cuda12.6-cudnn9-runtime
 
 # Install ragstuffer dependencies + sentence-transformers (uses the pre-installed PyTorch)
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir \
+RUN pip install --break-system-packages --no-cache-dir \
     -r /tmp/requirements.txt \
     sentence-transformers
 
