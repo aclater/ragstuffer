@@ -24,7 +24,6 @@ from common import (
     _extract_html_title,
     chunk_text,
     extract_html_text,
-    extract_text,
     extract_text_with_title,
 )
 
@@ -363,9 +362,7 @@ def embed_texts(texts: list[str], batch_size: int = 64) -> list[list[float]]:
     results: list[list[list[float]] | None] = [None] * len(batches)
 
     with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {
-            executor.submit(_embed_batch, idx, batch): idx for idx, (_, batch) in enumerate(batches)
-        }
+        futures = {executor.submit(_embed_batch, idx, batch): idx for idx, (_, batch) in enumerate(batches)}
         for future in as_completed(futures):
             batch_idx, vectors = future.result()
             results[batch_idx] = vectors
@@ -417,7 +414,6 @@ def _get_docstore():
 
 def _get_existing_doc_ids(qdrant, collection_name: str) -> set[str]:
     """Return the set of doc_ids that already have vectors in Qdrant."""
-    from qdrant_client.models import Filter, FieldCondition, MatchValue, ScrollRequest
 
     try:
         collections = [c.name for c in qdrant.get_collections().collections]
@@ -602,10 +598,9 @@ def _register_collection(collection_name: str, source_types: set[str]) -> None:
         log.info("Registered collection '%s' with source types %s", collection_name, source_types)
     except Exception as e:
         err_msg = str(e)
-        if "relation \"collections\" does not exist" in err_msg or "no such table" in err_msg:
+        if 'relation "collections" does not exist' in err_msg or "no such table" in err_msg:
             log.warning(
-                "collections table not found — skipping collection registration. "
-                "Run rag-suite migrations first."
+                "collections table not found — skipping collection registration. Run rag-suite migrations first."
             )
         else:
             log.warning("Failed to register collection '%s': %s", collection_name, err_msg)

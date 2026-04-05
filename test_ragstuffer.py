@@ -3,10 +3,8 @@ state management, admin server endpoints, and graceful shutdown."""
 
 import importlib.util
 import json
-import signal
 import sys
 import threading
-import time
 import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock, patch

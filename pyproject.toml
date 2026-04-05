@@ -21,7 +21,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-cov",
     "ruff",
+    "hypothesis",
 ]
 gpu = [
     "sentence-transformers",
@@ -42,3 +44,36 @@ select = ["E", "F", "W", "I"]
 [tool.pytest.ini_options]
 testpaths = ["."]
 python_files = ["test_*.py"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_incomplete_defs = true
+
+[[tool.mypy.overrides]]
+module = ["qdrant_client.*", "migraphx.*", "semantic_router.*", "asyncpg.*"]
+ignore_missing_imports = true
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
+skips = ["B101"]
+
+[tool.coverage.run]
+source = ["."]
+omit = ["test_*.py", "whitelist_vulture.py"]
+
+[tool.coverage.report]
+fail_under = 40
+show_missing = true
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+tag_format = "v$version"

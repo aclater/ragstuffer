@@ -494,10 +494,9 @@ def _register_collection(collection_name: str, source_types: set[str]) -> None:
         log.info("Registered collection '%s' with source types %s", collection_name, source_types)
     except Exception as e:
         err_msg = str(e)
-        if "relation \"collections\" does not exist" in err_msg or "no such table" in err_msg:
+        if 'relation "collections" does not exist' in err_msg or "no such table" in err_msg:
             log.warning(
-                "collections table not found — skipping collection registration. "
-                "Run rag-suite migrations first."
+                "collections table not found — skipping collection registration. Run rag-suite migrations first."
             )
         else:
             log.warning("Failed to register collection '%s': %s", collection_name, err_msg)

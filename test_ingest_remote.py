@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 # ── Real PointStruct stand-in ───────────────────────────────────────────────
 # We need a real class (not MagicMock) so payload dict access works correctly.
+
 
 @dataclass
 class _PointStruct:
