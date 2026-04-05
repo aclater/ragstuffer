@@ -25,6 +25,7 @@ def _get_pypdf():
     global _pypdf
     if _pypdf is None:
         import pypdf
+
         _pypdf = pypdf
     return _pypdf
 
@@ -33,6 +34,7 @@ def _get_docx():
     global _docx
     if _docx is None:
         import docx
+
         _docx = docx
     return _docx
 
@@ -41,6 +43,7 @@ def _get_presentation():
     global _Presentation
     if _Presentation is None:
         from pptx import Presentation
+
         _Presentation = Presentation
     return _Presentation
 
@@ -49,6 +52,7 @@ def _get_openpyxl():
     global _openpyxl
     if _openpyxl is None:
         import openpyxl
+
         _openpyxl = openpyxl
     return _openpyxl
 

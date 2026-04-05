@@ -12,13 +12,12 @@ Covers all source types with real file fixtures:
   - Plain text (always falls back to stem)
 """
 
-import pypdf
 import docx
-from pptx import Presentation
 import openpyxl
+import pypdf
+from pptx import Presentation
 
 from common import ExtractedText, extract_text_with_title
-
 
 # ── Text formats ────────────────────────────────────────────────────────────
 
@@ -171,7 +170,7 @@ class TestPptx:
         f = tmp_path / "deck.pptx"
         prs = Presentation()
         prs.core_properties.title = "Strategy Deck"
-        slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
+        prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
         prs.save(str(f))
 
         result = extract_text_with_title(f)
@@ -180,7 +179,7 @@ class TestPptx:
     def test_without_title(self, tmp_path):
         f = tmp_path / "slides.pptx"
         prs = Presentation()
-        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        prs.slides.add_slide(prs.slide_layouts[6])
         prs.save(str(f))
 
         result = extract_text_with_title(f)

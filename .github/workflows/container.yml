@@ -27,3 +27,20 @@ jobs:
       - uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: ${{ matrix.dockerfile }}
+
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Install dependencies and generate SBOM
+        run: |
+          pip install --quiet -r requirements.txt cyclonedx-bom
+          cyclonedx-py environment -o sbom.json --output-format json
+      - uses: actions/upload-artifact@v7.0.0
+        with:
+          name: sbom-cyclonedx
+          path: sbom.json

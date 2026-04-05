@@ -3,8 +3,6 @@
 import sys
 from unittest.mock import MagicMock
 
-from pathlib import Path
-
 from common import (
     ALL_EXTENSIONS,
     EXPORT_MAP,
@@ -17,15 +15,12 @@ from common import (
     extract_text,
 )
 
-
 # ── Constants ────────────────────────────────────────────────────────────────
 
 
 class TestConstants:
     def test_all_extensions_is_union(self):
-        assert ALL_EXTENSIONS == (
-            SUPPORTED_TEXT_EXTENSIONS | SUPPORTED_HTML_EXTENSIONS | SUPPORTED_BINARY_EXTENSIONS
-        )
+        assert ALL_EXTENSIONS == (SUPPORTED_TEXT_EXTENSIONS | SUPPORTED_HTML_EXTENSIONS | SUPPORTED_BINARY_EXTENSIONS)
 
     def test_gdrive_scopes_readonly(self):
         assert len(GDRIVE_SCOPES) == 1
@@ -171,7 +166,7 @@ class TestChunkText:
             tail = chunks[i][-40:]
             # At least some overlap text should be in the next chunk
             overlap_found = any(word in chunks[i + 1] for word in tail.split() if len(word) > 3)
-            assert overlap_found, f"No overlap between chunk {i} and {i+1}"
+            assert overlap_found, f"No overlap between chunk {i} and {i + 1}"
 
     def test_empty_text_returns_empty(self):
         assert chunk_text("", chunk_size=1024, overlap=128) == []

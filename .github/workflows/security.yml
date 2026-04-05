@@ -47,6 +47,19 @@ jobs:
           sarif_file: trivy-results-cpu.sarif
           category: trivy-cpu
 
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/python
+            p/security-audit
+            p/owasp-top-ten
+        continue-on-error: true
+
   codeql:
     name: CodeQL analysis
     runs-on: ubuntu-latest
