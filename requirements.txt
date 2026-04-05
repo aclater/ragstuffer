@@ -9,3 +9,4 @@ python-docx
 python-pptx
 openpyxl
 psycopg2-binary
+prometheus-client>=0.19.0
