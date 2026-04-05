@@ -16,8 +16,9 @@ RUN pip install --break-system-packages --no-cache-dir \
     sentence-transformers
 
 WORKDIR /app
-COPY ragstuffer.py ingest-remote.py docstore.py /app/
+COPY ragstuffer/ /app/ragstuffer/
+COPY ingest-remote.py docstore.py /app/
 
 # Default: run the poller (delegates to ragpipe for embedding)
 # For GPU ingestion: override CMD with python3 /app/ingest-remote.py
-CMD ["python3", "/app/ragstuffer.py"]
+CMD ["python3", "-m", "ragstuffer"]

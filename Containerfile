@@ -15,4 +15,4 @@ RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
 
 # App code is mounted as a volume at runtime for dev workflow
 WORKDIR /app
-CMD ["python3", "/app/ragstuffer.py"]
+CMD ["python3", "-m", "ragstuffer"]
