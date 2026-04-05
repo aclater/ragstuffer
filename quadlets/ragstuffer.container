@@ -28,6 +28,7 @@ EnvironmentFile=%h/.config/llm-stack/env
 # Overrides — ragstuffer-specific
 Environment=GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gdrive-sa.json
 Environment=RAG_STATE_FILE=/state/rag-state.json
+Environment=STAGING_DIR=/tmp/rag-staging
 
 # Run as non-root
 User=1000
