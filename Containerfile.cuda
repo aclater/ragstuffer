@@ -7,7 +7,7 @@
 #          -e TARGET_HOST=<ip> -e GDRIVE_FOLDER_ID=<id> \
 #          ragstuffer:cuda python3 /app/ingest-remote.py
 
-FROM docker.io/pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime
+FROM docker.io/pytorch/pytorch:2.11.0-cuda12.6-cudnn9-runtime
 
 # Install ragstuffer dependencies + sentence-transformers (uses the pre-installed PyTorch)
 COPY requirements.txt /tmp/requirements.txt
