@@ -1,16 +1,24 @@
-name: Containerfile lint
+name: Container image
 
 on:
   push:
     branches: [main]
-    paths:
-      - "Containerfile*"
+    tags: ["v*"]
   pull_request:
     paths:
       - "Containerfile*"
+      - "pyproject.toml"
+      - "requirements.txt"
+      - "ragstuffer.py"
+      - "common.py"
 
 permissions:
   contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   hadolint:
@@ -23,16 +31,65 @@ jobs:
           - Containerfile.rocm
           - Containerfile.cuda
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
       - uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: ${{ matrix.dockerfile }}
+
+  build:
+    name: Build & push (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - variant: cpu
+            file: Containerfile
+            suffix: ""
+          # ROCm and CUDA variants are built but not pushed in CI —
+          # they require GPU hardware for full testing. Built locally
+          # on hardware with GPU access.
+          - variant: rocm
+            file: Containerfile.rocm
+            suffix: "-rocm"
+          - variant: cuda
+            file: Containerfile.cuda
+            suffix: "-cuda"
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4.1.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6.0.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=${{ matrix.suffix }}
+            type=semver,pattern={{version}},suffix=${{ matrix.suffix }}
+            type=semver,pattern={{major}}.{{minor}},suffix=${{ matrix.suffix }}
+            type=sha,suffix=${{ matrix.suffix }}
+
+      - name: Build (PR) / Build & push (main/tag)
+        uses: docker/build-push-action@v7.0.0
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
   sbom:
     name: SBOM (CycloneDX)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.12"
