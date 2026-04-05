@@ -305,6 +305,36 @@ def get_qdrant_client():
     return QdrantClient(url=url, timeout=30)
 
 
+def _wait_for_embed_service(embed_url: str, timeout: int = 300) -> None:
+    """Block until the embedding service health check passes.
+
+    Ragpipe's /health returns 503 while MIGraphX is compiling the ONNX
+    graph (~3 min on gfx1151). Polling here avoids wasting a full ingest
+    cycle on a connection refused that will resolve on its own.
+    """
+    import time
+
+    import requests
+
+    health_url = embed_url.rsplit("/v1/", 1)[0] + "/health"
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while time.monotonic() < deadline:
+        try:
+            resp = requests.get(health_url, timeout=5)
+            if resp.status_code == 200:
+                if attempt > 0:
+                    log.info("Embedding service ready after %d attempts", attempt)
+                return
+        except requests.ConnectionError:
+            pass
+        attempt += 1
+        backoff = min(10, 2 ** min(attempt, 5))
+        log.info("Embedding service not ready (attempt %d), retrying in %ds...", attempt, backoff)
+        time.sleep(backoff)
+    raise RuntimeError(f"Embedding service at {health_url} not ready after {timeout}s")
+
+
 def embed_texts(texts: list[str], batch_size: int = 64) -> list[list[float]]:
     """Embed texts via ragpipe's /v1/embeddings endpoint.
 
@@ -317,6 +347,9 @@ def embed_texts(texts: list[str], batch_size: int = 64) -> list[list[float]]:
     import requests
 
     embed_url = os.environ.get("EMBED_URL", "http://127.0.0.1:8090/v1/embeddings")
+
+    _wait_for_embed_service(embed_url)
+
     session = requests.Session()
 
     def _embed_batch(batch_idx: int, batch: list[str]) -> tuple[int, list[list[float]]]:
