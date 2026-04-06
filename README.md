@@ -46,6 +46,17 @@ SELECT * FROM collections;
 -- 2  | nato | git | NATO documents | 2024-01-02
 ```
 
+## Second instance (ragstuffer-mpep)
+
+A second ragstuffer instance (`ragstuffer-mpep`) runs alongside the primary instance to ingest the USPTO/MPEP patent collection into the `mpep` Qdrant collection. It runs on port 8093:
+
+| Instance | Port | Collection | Description |
+|----------|------|------------|-------------|
+| ragstuffer | 8091 | personnel, nato, documents | General document ingestion |
+| ragstuffer-mpep | 8093 | mpep | USPTO/MPEP patent collection |
+
+Both instances share the same Postgres database but write to different Qdrant collections.
+
 ## Quick start (container)
 
 Three Containerfile variants — build selects automatically based on GPU:
@@ -204,7 +215,7 @@ ragstuffer/
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -v    # 63 tests
+python -m pytest -v    # 100 tests
 ```
 
 ## License

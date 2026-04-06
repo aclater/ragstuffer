@@ -114,7 +114,7 @@ ragstuffer_embed_errors_total
 ## Running tests
 ```bash
 pip install -r requirements.txt
-python -m pytest -v    # 63 tests
+python -m pytest -v    # 100 tests
 ```
 
 ## Container images
