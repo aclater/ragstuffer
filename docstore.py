@@ -94,6 +94,26 @@ class PostgresDocstore(DocstoreBackend):
                 )
             """)
             cur.execute("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''")
+            # Migrate created_at from TEXT to TIMESTAMPTZ if the table was
+            # created by an older version (fixes ragstuffer#21, refs rag-suite#6)
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (SELECT 1 FROM information_schema.columns
+                               WHERE table_name = 'chunks' AND column_name = 'created_at'
+                               AND data_type = 'text') THEN
+                        UPDATE chunks SET created_at = '1970-01-01T00:00:00Z'
+                            WHERE created_at = '';
+                        ALTER TABLE chunks
+                            ALTER COLUMN created_at TYPE TIMESTAMPTZ
+                            USING created_at::TIMESTAMPTZ;
+                        ALTER TABLE chunks
+                            ALTER COLUMN created_at SET DEFAULT NOW();
+                        RAISE NOTICE 'chunks.created_at migrated from TEXT to TIMESTAMPTZ';
+                    END IF;
+                END
+                $$
+            """)
 
     def upsert_chunk(self, doc_id: str, chunk_id: int, text: str, source: str, title: str = "") -> None:
         conn = self._get_sync_conn()

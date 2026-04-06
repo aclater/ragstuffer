@@ -141,6 +141,36 @@ class TestCachedDocstore:
         cached_store.init_schema()
 
 
+# ── created_at column type (regression for #21) ─────────────────────────────
+
+
+class TestCreatedAtType:
+    def test_sqlite_created_at_is_iso8601(self, sqlite_store):
+        """SQLite created_at must be a valid ISO8601 timestamp string."""
+        from datetime import datetime
+
+        sqlite_store.upsert_chunk("doc1", 0, "text", "source")
+        row = sqlite_store._conn.execute(
+            "SELECT created_at FROM chunks WHERE doc_id = 'doc1' AND chunk_id = 0"
+        ).fetchone()
+        assert row is not None
+        ts = row[0]
+        assert ts != "", "created_at must not be empty string"
+        # Must parse as ISO8601
+        parsed = datetime.fromisoformat(ts)
+        assert parsed.tzinfo is not None or "Z" in ts, "created_at must include timezone"
+
+    def test_postgres_init_schema_contains_timestamptz_migration(self):
+        """PostgresDocstore.init_schema must include ALTER COLUMN migration."""
+        import inspect
+
+        from docstore import PostgresDocstore
+
+        source = inspect.getsource(PostgresDocstore.init_schema)
+        assert "ALTER COLUMN created_at TYPE TIMESTAMPTZ" in source, \
+            "init_schema must migrate TEXT -> TIMESTAMPTZ for existing tables"
+
+
 # ── create_docstore factory ──────────────────────────────────────────────────
 
 
