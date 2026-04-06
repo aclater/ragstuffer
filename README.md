@@ -46,16 +46,16 @@ SELECT * FROM collections;
 -- 2  | nato | git | NATO documents | 2024-01-02
 ```
 
-## Second instance (ragstuffer-mpep)
+## Multiple instances
 
-A second ragstuffer instance (`ragstuffer-mpep`) runs alongside the primary instance to ingest the USPTO/MPEP patent collection into the `mpep` Qdrant collection. It runs on port 8093:
+The same ragstuffer image can run as multiple instances with different collection configs. The deployment quadlets are managed in [framework-ai-stack](https://github.com/aclater/framework-ai-stack):
 
-| Instance | Port | Collection | Description |
-|----------|------|------------|-------------|
-| ragstuffer | 8091 | personnel, nato, documents | General document ingestion |
-| ragstuffer-mpep | 8093 | mpep | USPTO/MPEP patent collection |
+| Instance | Port | Collection | Quadlet |
+|----------|------|------------|---------|
+| ragstuffer | 8091 | personnel, nato, documents | `framework-ai-stack/quadlets/ragstuffer.container` |
+| ragstuffer-mpep | 8093 | mpep | `framework-ai-stack/quadlets/ragstuffer-mpep.container` |
 
-Both instances share the same Postgres database but write to different Qdrant collections.
+Both instances share the same Postgres database and GHCR image but write to different Qdrant collections. Each instance is configured via environment variables (`QDRANT_COLLECTION`, `RAGSTUFFER_ADMIN_PORT`, `GDRIVE_FOLDER_ID`).
 
 ## Quick start (container)
 
