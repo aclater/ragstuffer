@@ -1,5 +1,5 @@
-# ragstuffer — pre-built image with system packages and Python dependencies
-# Base: UBI10 (matches current quadlet)
+# ragstuffer — CPU-only image with application code baked in
+# Base: UBI10 (Red Hat Universal Base Image)
 # No embedding model — delegates to ragpipe via /v1/embeddings
 FROM registry.access.redhat.com/ubi10@sha256:1b616c4a90d6444b394d5c8f4bd9e15a394d95dd628925d0ec80c257fdc5099c
 
@@ -13,6 +13,10 @@ RUN dnf install -y -q python3 python3-pip git-core && \
 COPY requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
 
-# App code is mounted as a volume at runtime for dev workflow
 WORKDIR /app
+COPY ragstuffer/ /app/ragstuffer/
+COPY common.py docstore.py /app/
+
+USER 1001
+
 CMD ["python3", "-m", "ragstuffer"]
