@@ -102,8 +102,18 @@ def list_drive_files(service, folder_id: str) -> list[dict]:
     return results
 
 
-def download_drive_file(service, file_info: dict, staging_dir: Path) -> Path | None:
-    """Download a Drive file to staging_dir. Returns the dest Path on success, None on skip."""
+def download_drive_file(
+    service, file_info: dict, staging_dir: Path, *, max_retries: int = 3
+) -> Path | None:
+    """Download a Drive file to staging_dir. Returns the dest Path on success, None on skip.
+
+    Retries transient HTTP errors (403 rate-limit, 429, 500, 503) with
+    exponential backoff. Google Docs export is limited to 10 MB by the API;
+    files exceeding this limit are logged and skipped.
+    """
+    import time
+
+    from googleapiclient.errors import HttpError
     from googleapiclient.http import MediaIoBaseDownload
 
     file_id = file_info["id"]
@@ -124,12 +134,40 @@ def download_drive_file(service, file_info: dict, staging_dir: Path) -> Path | N
         log.info("Downloading %s", name)
         request = service.files().get_media(fileId=file_id)
 
-    with open(dest, "wb") as fh:
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-    return dest
+    _RETRYABLE_STATUS_CODES = {403, 429, 500, 503}
+
+    for attempt in range(max_retries):
+        try:
+            with open(dest, "wb") as fh:
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+            return dest
+        except HttpError as e:
+            status = e.resp.status if e.resp else 0
+            if status == 403 and "exportSizeLimitExceeded" in str(e):
+                log.warning(
+                    "Drive: %s exceeds 10 MB export limit — skipping (Google Docs "
+                    "export is capped at 10 MB by the API)",
+                    name,
+                )
+                dest.unlink(missing_ok=True)
+                return None
+            if status in _RETRYABLE_STATUS_CODES and attempt < max_retries - 1:
+                backoff = 2**attempt
+                log.warning(
+                    "Drive: transient HTTP %d downloading %s — retrying in %ds (attempt %d/%d)",
+                    status,
+                    name,
+                    backoff,
+                    attempt + 1,
+                    max_retries,
+                )
+                time.sleep(backoff)
+                continue
+            raise
+    return None
 
 
 def load_drive_docs(staging_dir: Path) -> list[dict]:
@@ -163,7 +201,7 @@ def load_drive_docs(staging_dir: Path) -> list[dict]:
                 new_state[f["id"]] = f["modifiedTime"]
                 downloaded.append(dest)
         except Exception:
-            log.warning("Drive: failed to download %s — skipping", f["name"])
+            log.warning("Drive: failed to download %s — skipping", f["name"], exc_info=True)
 
     save_state(new_state)
 

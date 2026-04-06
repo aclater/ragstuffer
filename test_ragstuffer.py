@@ -15,6 +15,7 @@ _STUBS = {}
 for _mod in [
     "google.oauth2.service_account",
     "googleapiclient.discovery",
+    "googleapiclient.errors",
     "googleapiclient.http",
     "langchain_text_splitters",
 ]:
@@ -228,6 +229,20 @@ class TestAdminServerNoAuth:
 # ── download_drive_file return type ──────────────────────────────────────────
 
 
+def _make_http_error(status, content_bytes):
+    """Create an HttpError-like exception for testing."""
+    resp = MagicMock()
+    resp.status = status
+
+    class _HttpError(Exception):
+        def __init__(self, resp, content):
+            self.resp = resp
+            self.content = content
+            super().__init__(str(content))
+
+    return _HttpError(resp, content_bytes), _HttpError
+
+
 class TestDownloadDriveFile:
     """Verify download_drive_file returns Path on success, None on skip."""
 
@@ -236,3 +251,74 @@ class TestDownloadDriveFile:
         file_info = {"id": "123", "name": "data.xyz", "mimeType": "application/octet-stream"}
         result = rw.download_drive_file(mock_service, file_info, Path("/tmp"))
         assert result is None
+
+    def test_export_size_limit_returns_none(self, tmp_path):
+        """Regression for #22: Google Docs exceeding 10 MB export limit must be
+        skipped with a warning, not raise an unhandled exception."""
+        error, error_cls = _make_http_error(403, b"exportSizeLimitExceeded")
+        mock_service = MagicMock()
+        mock_downloader = MagicMock()
+        mock_downloader.next_chunk.side_effect = error
+
+        mock_http = MagicMock(MediaIoBaseDownload=MagicMock(return_value=mock_downloader))
+        with patch.dict(sys.modules, {"googleapiclient.errors": MagicMock(HttpError=error_cls)}), \
+             patch.dict(sys.modules, {"googleapiclient.http": mock_http}):
+            # Re-import to pick up the patched modules
+            import importlib
+
+            spec2 = importlib.util.spec_from_file_location(
+                "ragstuffer_test_export",
+                Path(__file__).parent / "ragstuffer" / "__init__.py",
+            )
+            mod = importlib.util.module_from_spec(spec2)
+            spec2.loader.exec_module(mod)
+
+            file_info = {"id": "123", "name": "Big Doc", "mimeType": "application/vnd.google-apps.document"}
+            result = mod.download_drive_file(mock_service, file_info, tmp_path)
+            assert result is None
+
+    def test_transient_error_retries(self, tmp_path):
+        """Regression for #22: transient HTTP 503 errors should be retried."""
+        error, error_cls = _make_http_error(503, b"Service Unavailable")
+        mock_service = MagicMock()
+        mock_downloader = MagicMock()
+        # Fail first two calls, succeed on third
+        mock_downloader.next_chunk.side_effect = [error, error, (None, True)]
+
+        mock_media_dl = MagicMock(return_value=mock_downloader)
+
+        with patch.dict(sys.modules, {"googleapiclient.errors": MagicMock(HttpError=error_cls)}), \
+             patch.dict(sys.modules, {"googleapiclient.http": MagicMock(MediaIoBaseDownload=mock_media_dl)}):
+            import importlib
+
+            spec2 = importlib.util.spec_from_file_location(
+                "ragstuffer_test_retry",
+                Path(__file__).parent / "ragstuffer" / "__init__.py",
+            )
+            mod = importlib.util.module_from_spec(spec2)
+            spec2.loader.exec_module(mod)
+
+            file_info = {"id": "123", "name": "retry.pdf", "mimeType": "application/pdf"}
+            with patch("time.sleep"):
+                result = mod.download_drive_file(mock_service, file_info, tmp_path)
+            assert result is not None
+            assert result.name == "retry.pdf"
+
+    def test_load_drive_docs_logs_traceback(self, tmp_path, caplog, monkeypatch):
+        """Regression for #22: download failures must log the exception traceback."""
+        import logging
+
+        monkeypatch.setenv("GDRIVE_FOLDER_ID", "test-folder")
+        monkeypatch.setattr(rw, "get_drive_service", lambda: MagicMock())
+        monkeypatch.setattr(rw, "list_drive_files", lambda svc, fid: [
+            {"id": "f1", "name": "fail.pdf", "mimeType": "application/pdf", "modifiedTime": "2026-01-01"},
+        ])
+        monkeypatch.setattr(rw, "load_state", lambda: {})
+        monkeypatch.setattr(rw, "save_state", lambda s: None)
+        monkeypatch.setattr(rw, "download_drive_file", MagicMock(side_effect=RuntimeError("test error")))
+
+        with caplog.at_level(logging.WARNING, logger="ragstuffer"):
+            rw.load_drive_docs(tmp_path)
+
+        assert any("failed to download" in r.message and r.exc_info for r in caplog.records), \
+            "Download failure must log with exc_info=True for debugging"
