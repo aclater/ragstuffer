@@ -78,7 +78,7 @@ def test_qdrant_reachable_via_ingest_metrics(ragstuffer_url):
 def test_postgres_reachable_via_ingest_metrics(ragstuffer_url):
     resp = httpx.get(f"{ragstuffer_url}/metrics", timeout=10)
     text = resp.text
-    assert "ragstuffer" in text
+    assert "ragstuffer_documents_ingested_total" in text or "ragstuffer_chunks_created_total" in text
 
 
 def test_embed_requests_tracked(ragstuffer_url):
