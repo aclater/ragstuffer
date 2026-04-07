@@ -2,6 +2,8 @@
 
 Document ingestion for RAG pipelines. Polls Google Drive, git repos, and web URLs, extracts text, chunks, embeds, and stuffs everything into Qdrant + Postgres for retrieval by [ragpipe](https://github.com/aclater/ragpipe).
 
+![ragstuffer architecture](architecture.svg)
+
 ## Data flow
 
 ```
