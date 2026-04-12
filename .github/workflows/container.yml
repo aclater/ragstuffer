@@ -104,7 +104,7 @@ jobs:
           push-to-registry: true
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v7.0.0
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: sbom-${{ matrix.variant }}-${{ github.run_id }}
           path: sbom.spdx.json
@@ -122,7 +122,7 @@ jobs:
         run: |
           pip install --quiet -r requirements.txt cyclonedx-bom
           cyclonedx-py environment -o sbom.json --output-format json
-      - uses: actions/upload-artifact@v7.0.0
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: sbom-cyclonedx
           path: sbom.json
