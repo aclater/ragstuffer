@@ -30,7 +30,7 @@ jobs:
         run: pip install --quiet -r requirements.txt pytest pytest-cov hypothesis prometheus-client
       - name: Run tests with coverage
         run: python -m pytest --cov=. --cov-report=xml --cov-report=term-missing -v
-      - uses: codecov/codecov-action@v6.0.0
+      - uses: codecov/codecov-action@v6.0.1
         with:
           file: coverage.xml
           fail_ci_if_error: false
